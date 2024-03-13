@@ -1,0 +1,3 @@
+﻿sample_ID,timepoint,replicate,fastq_R1,fastq_R2
+plasmid_lib_1,0,1,example_fastqs/CSM_lib_1_R1_001.fastq.gz,example_fastqs/CSM_lib_1_R2_001.fastq.gz
+plasmid_lib_2,0,2,example_fastqs/CSM_lib_2_R1_001.fastq.gz,example_fastqs/CSM_lib_2_R2_001.fastq.gz
