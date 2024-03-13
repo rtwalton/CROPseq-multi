@@ -1,5 +1,4 @@
-# CROPseq-multi
-Resources for multiplexed genetic perturbation and barcoding with CROPseq-multi.
+# CROPseq-multi: a versatile solution for multiplexed perturbation and decoding in pooled CRISPR screens
 
 Jupyter notebooks provide examples for library design and NGS analysis.
 
