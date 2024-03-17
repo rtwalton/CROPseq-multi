@@ -492,127 +492,131 @@ def build_CROPseq_multi_one_step_oligos(
 
 
 ##################################################################################################
-#                            build oligos for ROPseq-multi two-step cloning
+#                           build oligos for CROPseq-multi two-step cloning
 ##################################################################################################
 
+# # Serial cloning steps with (1) BsmBI and then (2) BbsI assembly
+# # Shorter oligos, probably less PCR-mediated recombination, but requires serial cloning
 
-def build_CROPseq_multi_two_step_oligo(
-    spacer_1, iBAR_1, spacer_2, iBAR_2,
-    template, dialout_fwd, dialout_rev, filler_version=None,
-):
+# # We're not currently recommending this alternate library construction approach
+
+# def build_CROPseq_multi_two_step_oligo(
+#     spacer_1, iBAR_1, spacer_2, iBAR_2,
+#     template, dialout_fwd, dialout_rev, filler_version=None,
+# ):
     
-    def build_oligo(filler_seq):
-        return template.format(
-            dialout_fwd = dialout_fwd,
-            CSM_BsmBI_left = CSM_BsmBI_left,
-            spacer_1 = spacer_1,
-            CSM_stem_1 = CSM_stem_1,
-            iBAR_1 = reverse_complement(iBAR_1), # reverse complement iBARs
-            BbsI_filler = filler_seq,
-            spacer_2 = spacer_2,
-            CSM_stem_2 = CSM_stem_2,
-            iBAR_2 = reverse_complement(iBAR_2), # reverse complement iBARs
-            CSM_BsmBI_right = CSM_BsmBI_right,
-            dialout_rev = reverse_complement(dialout_rev),
-        ).upper()
+#     def build_oligo(filler_seq):
+#         return template.format(
+#             dialout_fwd = dialout_fwd,
+#             CSM_BsmBI_left = CSM_BsmBI_left,
+#             spacer_1 = spacer_1,
+#             CSM_stem_1 = CSM_stem_1,
+#             iBAR_1 = reverse_complement(iBAR_1), # reverse complement iBARs
+#             BbsI_filler = filler_seq,
+#             spacer_2 = spacer_2,
+#             CSM_stem_2 = CSM_stem_2,
+#             iBAR_2 = reverse_complement(iBAR_2), # reverse complement iBARs
+#             CSM_BsmBI_right = CSM_BsmBI_right,
+#             dialout_rev = reverse_complement(dialout_rev),
+#         ).upper()
     
-    def fill_degenerate_bases(seq):
-        while seq.find("N") != -1:
-            n_index = seq.find("N")
-            base = np.random.choice(['A','C','T','G'])
-            seq = seq[:n_index] + base + seq[n_index+1:]
-        return seq
+#     def fill_degenerate_bases(seq):
+#         while seq.find("N") != -1:
+#             n_index = seq.find("N")
+#             base = np.random.choice(['A','C','T','G'])
+#             seq = seq[:n_index] + base + seq[n_index+1:]
+#         return seq
     
-    # randomly select a BbsI filler version
-    if filler_version is None:
-        filler_version = np.random.choice(list(BbsI_fillers.keys()))
-    filler_seq = BbsI_fillers[filler_version]
+#     # randomly select a BbsI filler version
+#     if filler_version is None:
+#         filler_version = np.random.choice(list(BbsI_fillers.keys()))
+#     filler_seq = BbsI_fillers[filler_version]
     
-    oligo = build_oligo(filler_seq)
+#     oligo = build_oligo(filler_seq)
     
-    # check for BsmBI, BbsI, and U6 terminator "TTTT" sites
-    if (count_BsmBI(oligo)!=2) | (count_BbsI(oligo)!=2) | (oligo.find("TTTT")!=-1):
-        oligo_temp = oligo
-        oligo = "failed"
-        # try to fix any with alternate tRNA choice
-        for filler_version in BbsI_fillers.keys():
-            filler_seq = BbsI_fillers[filler_version]
-            oligo_candidate = build_oligo(filler_seq)
-            if (count_BsmBI(oligo_candidate)==2) &\
-                (count_BbsI(oligo_candidate)==2) &\
-                (oligo_candidate.find("TTTT")==-1):
-                print('substituted original tRNA selection')
-                oligo = oligo_candidate
-                print(oligo)
-                break
+#     # check for BsmBI, BbsI, and U6 terminator "TTTT" sites
+#     if (count_BsmBI(oligo)!=2) | (count_BbsI(oligo)!=2) | (oligo.find("TTTT")!=-1):
+#         oligo_temp = oligo
+#         oligo = "failed"
+#         # try to fix any with alternate tRNA choice
+#         for filler_version in BbsI_fillers.keys():
+#             filler_seq = BbsI_fillers[filler_version]
+#             oligo_candidate = build_oligo(filler_seq)
+#             if (count_BsmBI(oligo_candidate)==2) &\
+#                 (count_BbsI(oligo_candidate)==2) &\
+#                 (oligo_candidate.find("TTTT")==-1):
+#                 print('substituted original tRNA selection')
+#                 oligo = oligo_candidate
+#                 print(oligo)
+#                 break
                 
-    # unable to remove BsmBI, BbsI, or U6 terminator "TTTT" motif
-    if oligo == "failed":
-        print('failed to remove BsmBI, BbsI, or U6 terminator')
-        print(oligo_temp)
-        return oligo, filler_version
+#     # unable to remove BsmBI, BbsI, or U6 terminator "TTTT" motif
+#     if oligo == "failed":
+#         print('failed to remove BsmBI, BbsI, or U6 terminator')
+#         print(oligo_temp)
+#         return oligo, filler_version
     
-    # fill any "N" sequences with random choice while avioding homopolymers and RE sites 
-    i=0
-    while oligo.find("N") != -1:
-        if i>50:
-            print('failed to fill degenerate bases')
-            print(oligo)
-            oligo='failed'
-            break
-        i+=1
-        oligo_candidate = fill_degenerate_bases(oligo)
-        if (count_BsmBI(oligo_candidate)==2) & (count_BbsI(oligo_candidate)==2):
-            # require that no new homopolymers are created
-            if count_homopolymer(oligo, 4) == count_homopolymer(oligo_candidate, 4):
-                oligo = oligo_candidate
-                break
-            else:
-                    continue
-        else:
-            continue       
+#     # fill any "N" sequences with random choice while avioding homopolymers and RE sites 
+#     i=0
+#     while oligo.find("N") != -1:
+#         if i>50:
+#             print('failed to fill degenerate bases')
+#             print(oligo)
+#             oligo='failed'
+#             break
+#         i+=1
+#         oligo_candidate = fill_degenerate_bases(oligo)
+#         if (count_BsmBI(oligo_candidate)==2) & (count_BbsI(oligo_candidate)==2):
+#             # require that no new homopolymers are created
+#             if count_homopolymer(oligo, 4) == count_homopolymer(oligo_candidate, 4):
+#                 oligo = oligo_candidate
+#                 break
+#             else:
+#                     continue
+#         else:
+#             continue       
     
-    return oligo, filler_version
+#     return oligo, filler_version
 
-def build_CROPseq_multi_two_step_oligos(
-    df_input, 
-    template,
-    spacer_1_column = 'spacer_1',
-    iBar_1_column ='iBAR_1',
-    spacer_2_column = 'spacer_2',
-    iBar_2_column ='iBAR_2',
-    tRNA_column = 'tRNA',
-    dialout_fwd_col ='dialout_fwd',
-    dialout_rev_col ='dialout_rev',
-                         ):
+# def build_CROPseq_multi_two_step_oligos(
+#     df_input, 
+#     template,
+#     spacer_1_column = 'spacer_1',
+#     iBar_1_column ='iBAR_1',
+#     spacer_2_column = 'spacer_2',
+#     iBar_2_column ='iBAR_2',
+#     tRNA_column = 'tRNA',
+#     dialout_fwd_col ='dialout_fwd',
+#     dialout_rev_col ='dialout_rev',
+#                          ):
     
-    # what to record:
-    # complete oligo sequence
-    # iBAR 1 and 2 sequences
-    # tRNA version
-    # dialout pair
+#     # what to record:
+#     # complete oligo sequence
+#     # iBAR 1 and 2 sequences
+#     # tRNA version
+#     # dialout pair
     
-    df = df_input.copy()
+#     df = df_input.copy()
 
-    oligo_designs = []
-    filler_versions = []
-    for spacer_1, iBAR_1, spacer_2, iBAR_2, tRNA, dialout_fwd, dialout_rev in df[
-        [spacer_1_column, iBar_1_column, 
-         spacer_2_column, iBar_2_column, 
-         tRNA_column, 
-         dialout_fwd_col, dialout_rev_col]].values:
+#     oligo_designs = []
+#     filler_versions = []
+#     for spacer_1, iBAR_1, spacer_2, iBAR_2, tRNA, dialout_fwd, dialout_rev in df[
+#         [spacer_1_column, iBar_1_column, 
+#          spacer_2_column, iBar_2_column, 
+#          tRNA_column, 
+#          dialout_fwd_col, dialout_rev_col]].values:
         
-        oligo, filler_version = build_CROPseq_multi_two_step_oligo(
-            spacer_1, iBAR_1, spacer_2, iBAR_2, dialout_fwd, dialout_rev, 
-            filler_version=tRNA,
-            template = template_2_step_oligo)
+#         oligo, filler_version = build_CROPseq_multi_two_step_oligo(
+#             spacer_1, iBAR_1, spacer_2, iBAR_2, dialout_fwd, dialout_rev, 
+#             filler_version=tRNA,
+#             template = template_2_step_oligo)
         
-        oligo_designs.append(oligo)
-        filler_versions.append(filler_version)
-    df['oligo'] = oligo_designs
-    df['tRNA'] = filler_versions
+#         oligo_designs.append(oligo)
+#         filler_versions.append(filler_version)
+#     df['oligo'] = oligo_designs
+#     df['tRNA'] = filler_versions
     
-    return df
+#     return df
 
 
 
