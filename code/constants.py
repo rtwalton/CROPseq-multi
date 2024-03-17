@@ -17,9 +17,11 @@ template_1_step_oligo = "{dialout_fwd}{CSM_BsmBI_left}{spacer_1}{CSM_stem_1}{iBA
 
 # CROPseq-multi two-step cloning
 
-BbsI_filler_tRNA_A = "GACTGCNNGTCTTCNNNNNNNNNNGAAGACNNTCCA"
-BbsI_filler_tRNA_P = "GACTNNGTCTTCNNNNNNNNNNGAAGACNNGAGCCC"
-BbsI_filler_tRNA_Q = "GACTGNNGTCTTCNNNNNNNNNNGAAGACNNAACCT"
-BbsI_fillers = {'tRNA_A':BbsI_filler_tRNA_A, 'tRNA_P':BbsI_filler_tRNA_P, 'tRNA_Q':BbsI_filler_tRNA_Q}
+# we're not currently recommending a two-step cloning protocol
 
-template_2_step_oligo = "{dialout_fwd}{CSM_BsmBI_left}{spacer_1}{CSM_stem_1}{iBAR_1}{BbsI_filler}{spacer_2}{CSM_stem_2}{iBAR_2}{CSM_BsmBI_right}{dialout_rev}"
+# BbsI_filler_tRNA_A = "GACTGCNNGTCTTCNNNNNNNNNNGAAGACNNTCCA"
+# BbsI_filler_tRNA_P = "GACTNNGTCTTCNNNNNNNNNNGAAGACNNGAGCCC"
+# BbsI_filler_tRNA_Q = "GACTGNNGTCTTCNNNNNNNNNNGAAGACNNAACCT"
+# BbsI_fillers = {'tRNA_A':BbsI_filler_tRNA_A, 'tRNA_P':BbsI_filler_tRNA_P, 'tRNA_Q':BbsI_filler_tRNA_Q}
+
+# template_2_step_oligo = "{dialout_fwd}{CSM_BsmBI_left}{spacer_1}{CSM_stem_1}{iBAR_1}{BbsI_filler}{spacer_2}{CSM_stem_2}{iBAR_2}{CSM_BsmBI_right}{dialout_rev}"
