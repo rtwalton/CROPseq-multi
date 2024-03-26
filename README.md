@@ -6,6 +6,7 @@
 <img src="https://github.com/rtwalton/CROPseq-multi/blob/main/input_files/CSM_cartoon.png" alt="CROPseq-multi illustration" width="500"/>
 
 ### Installation:
+#### (Mac OS)
 
 Download the repository, navigate to the `CROPseq-multi` directory, and run the following command to create the environment `CSM`.
 ```
@@ -14,6 +15,25 @@ conda env create -f CSM_env.yml
 Activate the environment:
 ```
 conda activate CSM
+```
+#### (systems other than Mac OS)
+
+Create a Python 3.9 environment with the following common python packages:
+```
+biopython
+glob
+gzip
+itertools
+jupyter-lab
+matplotlib
+numpy
+os
+pandas
+random
+seaborn
+sys
+time
+tqdm
 ```
 
 ### Usage:
