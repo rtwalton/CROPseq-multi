@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import random
 from tqdm import tqdm
+import warnings
 
 from constants import *
 
@@ -93,10 +94,28 @@ def check_spacer_2(seq, tRNA_req = 'any'):
 
     """
 
-    tRNA_flanks = ['CCTCCA','GAGCCC','GAACCT']
+    tRNA_flanks = [seq[-6:] for seq in tRNA_seqs.values()] #['CCTCCA','GAGCCC','GAACCT']
     seq=seq.upper()
     seqs_w_flank = [flank+seq+'GTTTCA' for flank in tRNA_flanks]
     checks = [not (contains_RE(seq_w_flank) | contains_U6_term(seq_w_flank)) for seq_w_flank in seqs_w_flank]
+    
+    if tRNA_req == 'any':
+        return max(checks)
+    elif tRNA_req == 'all':
+        return min(checks)
+
+
+def check_tRNA_leader(seq, tRNA_req = 'all'):
+    """
+    tRNA_req = 'any' requires compatibility with at least one of the tRNAs
+    tRNA_req = 'all' requires compatibility with all of the tRNAs
+
+    """
+
+    tRNA_flanks = [seq[:6] for seq in tRNA_seqs.values()]
+    seq=seq.upper()
+    seqs_w_flank = ['GGCTGC'+seq+flank for flank in tRNA_flanks]
+    checks = [not (contains_BsmBI(seq_w_flank) | contains_U6_term(seq_w_flank)) for seq_w_flank in seqs_w_flank]
     
     if tRNA_req == 'any':
         return max(checks)
@@ -208,35 +227,53 @@ def check_barcode_pair_cycle_requirements(
     barcode_1 = 'iBAR_1', barcode_2 = 'iBAR_2',
 ):
     
-    print('barcode 1 only:\n %s cycles'% 
-        determine_minimal_cycle_number(barcode_pair_df[barcode_1].values))
-    print('barcode 2 only:\n %s cycles: '% 
-        determine_minimal_cycle_number(barcode_pair_df[barcode_2].values))
-    print('barcode 1 or 2:\n %s cycles '% 
-        determine_minimal_cycle_number(barcode_pair_df[[barcode_1,barcode_2]].values.flatten()))
+    barcode_1_cycles = determine_minimal_cycle_number(barcode_pair_df[barcode_1].values)
+    barcode_2_cycles = determine_minimal_cycle_number(barcode_pair_df[barcode_2].values)
+    barcode_1_or_2_cycles = determine_minimal_cycle_number(barcode_pair_df[[barcode_1,barcode_2]].values.flatten())
+
+    if barcode_1_cycles is None:
+        print('barcode 1 is not unique in set(barcode 1)')
+    else:
+        print('barcode 1 is unique in set(barcode 1) in:\n %s cycles'% barcode_1_cycles)
+    
+    if barcode_2_cycles is None:
+        print('barcode 2 is not unique in set(barcode 2)')
+    else:
+        print('barcode 2 is unique in set(barcode 2) in:\n %s cycles'% barcode_2_cycles)
+
+    if barcode_1_or_2_cycles is None:
+        print('barcodes in set(barcode 1, barcode 2) are not unique')
+    else:
+        print('barcodes in set(barcode 1, barcode 2) are unique in:\n %s cycles'% barcode_1_or_2_cycles)
     
     min_dual_cycle = determine_minimal_cycle_number(barcode_pair_df[barcode_1]+'_'+barcode_pair_df[barcode_2], 
                                          dual=True, directional=False)
     recomb_detection = test_recombination_detection(barcode_pair_df[[barcode_1,barcode_2]],
                                                    directional=False)
-    
-    print('barcode 1-2 or 2-1:\n %s cycles with %s%% recombination detection'%(
-        min_dual_cycle, round(100*recomb_detection[min_dual_cycle])))
 
-    print(' or:\n %s cycles with %s%% recombination detection'%(
-        min_dual_cycle+1, round(100*recomb_detection[min_dual_cycle+1])))
+    if min_dual_cycle is None:
+        print('barcode pair is not unique in set(1-2, 2-1)')
+    else:
+        print('barcode pair is unique in set(1-2, 2-1) in :\n %s cycles with %s%% recombination detection'%(
+            min_dual_cycle, round(100*recomb_detection[min_dual_cycle])))
+        if round(100*recomb_detection[min_dual_cycle]) < 100:
+            print(' or:\n %s cycles with %s%% recombination detection'%(
+                min_dual_cycle+1, round(100*recomb_detection[min_dual_cycle+1])))
 
     min_dual_cycle = determine_minimal_cycle_number((barcode_pair_df[barcode_1]+'_'+barcode_pair_df[barcode_2]).values, 
                                          dual=True, directional=True)
     recomb_detection = test_recombination_detection((barcode_pair_df[[barcode_1,barcode_2]]).values,
                                                    directional=True)
     
-    print('barcode 1-2:\n %s cycles with %s%% recombination detection'%(
-        min_dual_cycle, round(100*recomb_detection[min_dual_cycle])))
-    print(' or:\n %s cycles with %s%% recombination detection'%(
-        min_dual_cycle+1, round(100*recomb_detection[min_dual_cycle+1])))
 
-
+    if min_dual_cycle is None:
+        print('barcode pair is not unique in set(1-2)')
+    else:
+        print('barcode pair is unique in set(1-2) in:\n %s cycles with %s%% recombination detection'%(
+            min_dual_cycle, round(100*recomb_detection[min_dual_cycle])))
+        if round(100*recomb_detection[min_dual_cycle]) < 100:
+            print(' or:\n %s cycles with %s%% recombination detection'%(
+                min_dual_cycle+1, round(100*recomb_detection[min_dual_cycle+1])))
 
 ##################################################################################################
 #                               iBAR selection workflows
@@ -345,16 +382,49 @@ def complete_iBARs_v1(
 #                             pairing guides from a CRISPick output
 ##################################################################################################
 
-def pair_guides_single_target_CRISPick(guide_input_df, constructs_per_gene=3):
+def filter_guides(
+    guides_df,
+    position_req='any',tRNA_req='any'
+    ):
+
+    """
+    filter spacers for compatibility in positions of the vector
+    expects CRISPick output as input format
+
+    """
+    
+    # check spacer compatibility in each position
+    guides_df['spacer1_check']= guides_df['sgRNA Sequence'].apply(check_spacer_1)
+    guides_df['spacer2_check']= guides_df['sgRNA Sequence'].apply(check_spacer_2, tRNA_req=tRNA_req)
+
+    # if spacers must work in all positions, filter out candidates that are one or the other
+    if position_req =='all':
+        guides_df = guides_df[guides_df['spacer1_check'] & guides_df['spacer2_check']]
+    elif position_req =='any':
+        guides_df = guides_df[guides_df['spacer1_check'] | guides_df['spacer2_check']]
+
+    return guides_df
+
+def pair_guides_single_target_CRISPick(
+    guide_input_df, constructs_per_gene=3, position_req='any',tRNA_req='any'
+    ):
+    """
+    Use CRISPick output to pair two guides targeting the same gene in one construct
+    """
 
     guide_pairs_df = pd.DataFrame()
 
     # check spacer compatibility in each position
     guide_input_df['spacer1_check']= guide_input_df['sgRNA Sequence'].apply(check_spacer_1)
-    guide_input_df['spacer2_check']= guide_input_df['sgRNA Sequence'].apply(check_spacer_2)
+    guide_input_df['spacer2_check']= guide_input_df['sgRNA Sequence'].apply(check_spacer_2, tRNA_req=tRNA_req)
+
+    # if spacers must work in all positions, filter out candidates that are one or the other
+    if position_req =='all':
+        guide_input_df = guide_input_df[guide_input_df['spacer1_check'] & guide_input_df['spacer2_check']]
 
     for target, target_df in guide_input_df.groupby('Target Gene Symbol'):
-        target_df.sort_values('Pick Order')
+        # sort guides by pick order, ascending
+        target_df.sort_values('Pick Order', inplace=True)
 
         spacer_1_canditates = list(target_df[target_df['spacer1_check']]['sgRNA Sequence'].values)
         spacer_2_canditates = list(target_df[target_df['spacer2_check']]['sgRNA Sequence'].values)
@@ -390,8 +460,152 @@ def pair_guides_single_target_CRISPick(guide_input_df, constructs_per_gene=3):
         guide_pairs_df = pd.concat(
             [guide_pairs_df,
             pd.DataFrame(data=target_guide_pairs, columns=['target','spacer_1','spacer_2'])
-            ], ignore_index=True)
+            ])
+
+    guide_pairs_df['target_version'] = guide_pairs_df.index.astype(int) + 1
+    guide_pairs_df.reset_index(inplace=True, drop=True)
+
+    return guide_pairs_df
+
+
+def pair_guides_target_and_control_CRISPick(
+    guide_input_df, 
+    control_guides_df,
+    constructs_per_gene=4,
+    tRNA_req='all',
+    rand_seed=0,
+    ):
+
+    """
+    pair gene targeting guides with controls (e.g. nontargeting, intergenic, olfactory receptors)
+    guide input should be CRISPick output format
+    """
         
+    rng = np.random.default_rng(seed=rand_seed)
+    
+    guide_pairs_df = pd.DataFrame()
+
+    # check spacer compatibility in each position
+    guide_input_df['spacer1_check'] = guide_input_df['sgRNA Sequence'].apply(check_spacer_1)
+    guide_input_df['spacer2_check'] = guide_input_df['sgRNA Sequence'].apply(check_spacer_2, tRNA_req=tRNA_req)
+    control_guides_df['spacer1_check']= control_guides_df['sgRNA Sequence'].apply(check_spacer_1)
+    control_guides_df['spacer2_check']= control_guides_df['sgRNA Sequence'].apply(check_spacer_2, tRNA_req=tRNA_req)    
+
+    # require that spacers work in all positions since we're not deciding position yet
+    guide_input_df = guide_input_df[guide_input_df['spacer1_check'] & guide_input_df['spacer2_check']]
+    control_guides_df = control_guides_df[control_guides_df['spacer1_check'] & control_guides_df['spacer2_check']]
+
+    control_candidates = list(control_guides_df['sgRNA Sequence'].values)
+
+    for target, target_gene_df in guide_input_df.groupby('Target Gene Symbol'):
+        target_gene_df.sort_values('Pick Order', inplace=True)
+
+        gene_targeting_guides = list(target_gene_df['sgRNA Sequence'].values)[:constructs_per_gene]
+        # print a warning if we run out of guides for a target
+        if len(gene_targeting_guides)<constructs_per_gene:
+            print('not enough compatible guides for target ',target)
+            continue
+            
+        control_guides = rng.choice(control_candidates, constructs_per_gene)
+        
+        df_target = pd.DataFrame()
+        df_target['target'] = [target]*constructs_per_gene
+        df_target['targeting_spacer'] = gene_targeting_guides
+        df_target['control_spacer'] = control_guides
+
+        # alternate targeting position, randomly starting in either position
+        j = rng.choice([1,2])
+        df_target['target_spacer_pos'] = [(j+i)%2+1 for i in range(len(df_target))]
+        df_target['spacer_1'] = pd.Series(dtype='str')
+        df_target['spacer_2'] = pd.Series(dtype='str')
+        # assign spacer 1
+        df_target.loc[df_target.target_spacer_pos==1,'spacer_1'] = df_target.loc[
+        df_target.target_spacer_pos==1, 'targeting_spacer']
+        df_target.loc[df_target.target_spacer_pos==2,'spacer_1'] = df_target.loc[
+        df_target.target_spacer_pos==2, 'control_spacer']
+        # assign spacer 2
+        df_target.loc[df_target.target_spacer_pos==1,'spacer_2'] = df_target.loc[
+        df_target.target_spacer_pos==1, 'control_spacer']
+        df_target.loc[df_target.target_spacer_pos==2,'spacer_2'] = df_target.loc[
+        df_target.target_spacer_pos==2, 'targeting_spacer']
+
+        guide_pairs_df = pd.concat([guide_pairs_df, df_target])
+
+    guide_pairs_df['target_version'] = guide_pairs_df.index.astype(int) + 1
+    guide_pairs_df.reset_index(inplace=True, drop=True)
+
+    return guide_pairs_df    
+
+
+def pair_guides_for_GI_CRISPick(
+    gene_pairs, # list of gene pairs
+    GI_input_df, # combinations to design
+    guide_input_df, # CRISPick design file with all genes for 
+    control_guides_df, # CRISPick design file with control guides to pull from
+    tRNA_req='all',
+    rand_seed=0,
+    ):
+    
+    rng = np.random.default_rng(seed=rand_seed)
+    
+    guide_pairs_df = pd.DataFrame()
+    
+    # some formatting of GI set dataframe
+    # GI_sets_df = GI_input_df.copy()
+    GI_input_df['GI_version'] = (GI_input_df['target_pos1']+'_'+GI_input_df['target_pos2']).map({
+        'A_B':'AB','B_A':'AB','A_ctrl':'A','ctrl_A':'A','B_ctrl':'B','ctrl_B':'B'})
+    # determine number of unique guides needed per target
+    n_A_guides = len(set(list(GI_input_df[(GI_input_df['target_pos1']=='A')]['spacer_version_pos1'].unique()) +\
+                         list(GI_input_df[(GI_input_df['target_pos2']=='A')]['spacer_version_pos1'].unique())))
+    n_B_guides = len(set(list(GI_input_df[(GI_input_df['target_pos1']=='B')]['spacer_version_pos1'].unique()) +\
+                         list(GI_input_df[(GI_input_df['target_pos2']=='B')]['spacer_version_pos1'].unique())))
+    n_ctrl_guides = len(set(list(GI_input_df[(GI_input_df['target_pos1']=='ctrl')]['spacer_version_pos1'].unique()) +\
+                            list(GI_input_df[(GI_input_df['target_pos2']=='ctrl')]['spacer_version_pos1'].unique())))
+    
+    # check spacer compatibility in each position
+    guide_input_df['spacer1_check'] = guide_input_df['sgRNA Sequence'].apply(check_spacer_1)
+    guide_input_df['spacer2_check'] = guide_input_df['sgRNA Sequence'].apply(check_spacer_2, tRNA_req=tRNA_req)
+    control_guides_df['spacer1_check'] = control_guides_df['sgRNA Sequence'].apply(check_spacer_1)
+    control_guides_df['spacer2_check'] = control_guides_df['sgRNA Sequence'].apply(check_spacer_2, tRNA_req=tRNA_req)    
+
+    # require that spacers work in all positions
+    guide_input_df = guide_input_df[guide_input_df['spacer1_check'] & guide_input_df['spacer2_check']]
+    control_guides_df = control_guides_df[control_guides_df['spacer1_check'] & control_guides_df['spacer2_check']]
+
+    control_candidates = list(control_guides_df['sgRNA Sequence'].values)
+
+    # iterate through gene pairs
+    for gene_A, gene_B in gene_pairs:
+
+        # subsetting guide input for target genes
+        target_A_df = guide_input_df[guide_input_df['Target Gene Symbol']==gene_A].sort_values('Pick Order')
+        target_B_df = guide_input_df[guide_input_df['Target Gene Symbol']==gene_B].sort_values('Pick Order')
+        
+        # select guides based on target and pick order, + controls
+        spacer_dict = {'A_'+str(i+1): list(target_A_df['sgRNA Sequence'].values)[i] for i in range(n_A_guides)}
+        spacer_dict.update({'B_'+str(i+1): list(target_B_df['sgRNA Sequence'].values)[i] for i in range(n_B_guides)})
+        spacer_dict.update({'ctrl_'+str(i+1):rng.choice(control_candidates, n_ctrl_guides)[i] for i in range(n_ctrl_guides)})
+
+        df_target = GI_input_df.copy()
+        # randomly assign tRNA if unspecified
+        df_target.loc[df_target['tRNA_version'].isna(),'tRNA_version'] = rng.choice(
+            list(range(1,len(tRNA_seqs.keys())+1)), len(df_target.loc[df_target['tRNA_version'].isna()]))
+        tRNA_order = rng.choice(list(tRNA_seqs.keys()), len(tRNA_seqs.keys()), replace=False)
+        tRNA_assignment = {i+1:tRNA_order[i] for i in range(len(tRNA_order))}
+        df_target['tRNA'] = df_target['tRNA_version'].map(tRNA_assignment)
+        
+        # pair guides as defined in GI set input
+        df_target['target'] = df_target['GI_version'].map({'A':gene_A,'B':gene_B, 'AB':str(gene_A)+'_'+str(gene_B)})
+        df_target['GI_pair'] = str(gene_A)+'_'+str(gene_B)
+        df_target['spacer_1'] = (df_target['target_pos1']+'_'+df_target['spacer_version_pos1'].astype(str)).map(spacer_dict)
+        df_target['spacer_1_target'] = df_target['target_pos1'].map({'A':gene_A,'B':gene_B, 'ctrl':'ctrl'})
+        df_target['spacer_2'] = (df_target['target_pos2']+'_'+df_target['spacer_version_pos2'].astype(str)).map(spacer_dict)
+        df_target['spacer_2_target'] = df_target['target_pos2'].map({'A':gene_A,'B':gene_B, 'ctrl':'ctrl'})
+
+        df_target['GI_version_index'] = df_target.groupby('GI_pair').cumcount()+1
+        
+        guide_pairs_df = pd.concat([guide_pairs_df, df_target])
+
     return guide_pairs_df
 
 ##################################################################################################
@@ -399,6 +613,149 @@ def pair_guides_single_target_CRISPick(guide_input_df, constructs_per_gene=3):
 ##################################################################################################
 
 def build_CROPseq_multi_one_step_oligo(
+    spacer_1, iBAR_1, spacer_2, iBAR_2,
+    template, dialout_fwd, dialout_rev, 
+    tRNA_leader_seq = None,
+    tRNA_choice = None,
+):
+    
+    def build_oligo(tRNA_leader_seq, tRNA_seq):
+        return template.format(
+            dialout_fwd = dialout_fwd,
+            CSM_BsmBI_left = CSM_BsmBI_left,
+            spacer_1 = spacer_1,
+            CSM_stem_1 = CSM_stem_1,
+            iBAR_1 = reverse_complement(iBAR_1), # reverse complement iBARs
+            tracr_1 = CSM_tracr_1,
+            tRNA_leader = tRNA_leader_seq,
+            tRNA = tRNA_seq,
+            spacer_2 = spacer_2,
+            CSM_stem_2 = CSM_stem_2,
+            iBAR_2 = reverse_complement(iBAR_2), # reverse complement iBARs
+            CSM_BsmBI_right = CSM_BsmBI_right,
+            dialout_rev = reverse_complement(dialout_rev),
+        ).upper()
+    
+    # randomly select a tRNA version if none specified
+    if tRNA_choice is None:
+        tRNA_choice = np.random.choice(list(tRNA_seqs.keys()))
+    tRNA_seq = tRNA_seqs[tRNA_choice]
+
+    # set tRNA leader to default if none specified
+    if tRNA_leader_seq is None:
+        tRNA_leader_seq = CSM_tRNA_leader_default
+    
+    oligo = build_oligo(tRNA_leader_seq, tRNA_seq)
+
+    # check for BsmBI and U6 terminator "TTTT" sites
+    if (count_BsmBI(oligo)!=2) | (oligo.find("TTTT")!=-1):
+        # try to fix any with alternate tRNA choice
+        for tRNA_choice_2 in tRNA_seqs.keys():
+            tRNA_seq = tRNA_seqs[tRNA_choice_2]
+            oligo_candidate = build_oligo(tRNA_leader_seq, tRNA_seq)
+            if (count_BsmBI(oligo_candidate)==2) &\
+                (oligo_candidate.find("TTTT")==-1):
+                oligo = oligo_candidate
+                tRNA_choice = tRNA_choice_2
+                break
+
+    return oligo, tRNA_choice
+
+def build_CROPseq_multi_one_step_oligos(
+    df_guides_input, 
+    spacer_1_col='spacer_1',
+    spacer_2_col='spacer_2', 
+    ibar1_col='iBAR_1', 
+    ibar2_col='iBAR_2', 
+    tRNA_leader_col = 'tRNA_leader',
+    tRNA_col='tRNA', 
+    dialout_fwd_col ='dialout_fwd',
+    dialout_rev_col ='dialout_rev',
+    # column names
+    template = template_1_step_oligo
+):
+    
+    df_guides = df_guides_input.copy()
+
+    # start by checking whether some columns were specified
+
+    # if tRNA leader sequence column is not present, create and fill with default
+    if tRNA_leader_col not in df_guides.columns:
+        df_guides[tRNA_leader_col] = CSM_tRNA_leader_default
+    # if provided, fill any missing values with default
+    elif df_guides[tRNA_leader_col].isna().values.any():
+        print("unspecified leader sequences were set to the default: %s"%CSM_tRNA_leader_default)
+        df_guides[tRNA_leader_col]  = df_guides[tRNA_leader_col].fillna(CSM_tRNA_leader_default)
+
+    # if tRNA column is not present, create and fill at random
+    if tRNA_leader_col not in df_guides.columns:
+        print("tRNAs not specified by 'tRNA_leader_col' = %s - assign tRNAs at random "% tRNA_leader)
+        df_guides[tRNA_col] = np.random.choice(tRNA_seqs.keys(), len(df_guides))
+    # if provided, fill any missing values with default
+    elif df_guides[tRNA_col].isna().values.any():
+        print("unspecified tRNAs were assigned at random")
+        # df_guides[tRNA_col] = df_guides[tRNA_col].apply(
+        #     lambda trna: trna if not np.isnan(trna) else np.random.choice(list(tRNA_seqs.keys())) )
+        df_guides.loc[df_guides[tRNA_col].isna(),tRNA_col] = np.random.choice(list(tRNA_seqs.keys()),
+            len(df_guides[df_guides[tRNA_col].isna()]))
+
+    oligos = []
+    tRNA_choices = []
+    failed_designs = pd.DataFrame()
+
+
+    # iterate through and design oligos
+    for index, row in df_guides.iterrows():
+
+        oligo, tRNA_selection = build_CROPseq_multi_one_step_oligo(
+            row[spacer_1_col],
+            row[ibar1_col],
+            row[spacer_2_col],
+            row[ibar2_col],
+            tRNA_leader_seq=row[tRNA_leader_col],
+            tRNA_choice=row[tRNA_col],
+            dialout_fwd=row[dialout_fwd_col],
+            dialout_rev=row[dialout_rev_col],
+            template = template_1_step_oligo,
+            )
+
+        # final check for BsmBI and U6 terminator sequences
+        if (count_BsmBI(oligo)==2) & (oligo.find("TTTT")==-1) & (oligo.find("N")==-1):
+            pass
+        else:
+            errors = []
+            if count_BsmBI(oligo)!=2:
+                errors.append('%s BsmBI sites'%(count_BsmBI(oligo)))
+            if contains_U6_term(oligo):
+                errors.append('contains "TTTT"')
+            if oligo.find("N")!=-1:
+                errors.append('degenerate bases present')
+
+
+            failed_designs = pd.concat([failed_designs, df_guides.iloc[index:index+1]])
+            failed_designs.loc[index,'failure_cause'] = ', '.join(errors)
+            failed_designs.loc[index,'oligo'] = oligo
+
+            oligo='failed'
+
+        if row[tRNA_col] != tRNA_selection:
+            print('changed a tRNA from %s to %s'%(row[tRNA_col], tRNA_selection))
+        
+        oligos.append(oligo)
+        tRNA_choices.append(tRNA_selection)
+        
+    df_guides['oligo'] = oligos
+    df_guides['tRNA'] = tRNA_choices # because some may be changed
+
+    return df_guides, failed_designs
+
+
+##################################################################################################
+#                            build oligos for ROPseq-multi two-step cloning
+##################################################################################################
+
+
+def build_CROPseq_multi_two_step_oligo(
     spacer_1, iBAR_1, spacer_2, iBAR_2,
     template, dialout_fwd, dialout_rev, filler_version=None,
 ):
@@ -410,7 +767,7 @@ def build_CROPseq_multi_one_step_oligo(
             spacer_1 = spacer_1,
             CSM_stem_1 = CSM_stem_1,
             iBAR_1 = reverse_complement(iBAR_1), # reverse complement iBARs
-            scaffold_tRNA = filler_seq,
+            BbsI_filler = filler_seq,
             spacer_2 = spacer_2,
             CSM_stem_2 = CSM_stem_2,
             iBAR_2 = reverse_complement(iBAR_2), # reverse complement iBARs
@@ -418,205 +775,103 @@ def build_CROPseq_multi_one_step_oligo(
             dialout_rev = reverse_complement(dialout_rev),
         ).upper()
     
-    # randomly select a tRNA version
+    def fill_degenerate_bases(seq):
+        while seq.find("N") != -1:
+            n_index = seq.find("N")
+            base = np.random.choice(['A','C','T','G'])
+            seq = seq[:n_index] + base + seq[n_index+1:]
+        return seq
+    
+    # randomly select a BbsI filler version
     if filler_version is None:
-        filler_version = np.random.choice(list(scaffold_tRNA_fillers.keys()))
-    filler_seq = scaffold_tRNA_fillers[filler_version]
+        filler_version = np.random.choice(list(BbsI_fillers.keys()))
+    filler_seq = BbsI_fillers[filler_version]
     
     oligo = build_oligo(filler_seq)
-
-    # check for BsmBI and U6 terminator "TTTT" sites
-    if (count_BsmBI(oligo)!=2) | (oligo.find("TTTT")!=-1):
+    
+    # check for BsmBI, BbsI, and U6 terminator "TTTT" sites
+    if (count_BsmBI(oligo)!=2) | (count_BbsI(oligo)!=2) | (oligo.find("TTTT")!=-1):
+        oligo_temp = oligo
+        oligo = "failed"
         # try to fix any with alternate tRNA choice
-        for filler_v in scaffold_tRNA_fillers.keys():
-            filler_version = filler_v
-            filler_seq = scaffold_tRNA_fillers[filler_version]
+        for filler_version in BbsI_fillers.keys():
+            filler_seq = BbsI_fillers[filler_version]
             oligo_candidate = build_oligo(filler_seq)
             if (count_BsmBI(oligo_candidate)==2) &\
+                (count_BbsI(oligo_candidate)==2) &\
                 (oligo_candidate.find("TTTT")==-1):
+                print('substituted original tRNA selection')
+                oligo = oligo_candidate
+                print(oligo)
+                break
+                
+    # unable to remove BsmBI, BbsI, or U6 terminator "TTTT" motif
+    if oligo == "failed":
+        print('failed to remove BsmBI, BbsI, or U6 terminator')
+        print(oligo_temp)
+        return oligo, filler_version
+    
+    # fill any "N" sequences with random choice while avioding homopolymers and RE sites 
+    i=0
+    while oligo.find("N") != -1:
+        if i>50:
+            print('failed to fill degenerate bases')
+            print(oligo)
+            oligo='failed'
+            break
+        i+=1
+        oligo_candidate = fill_degenerate_bases(oligo)
+        if (count_BsmBI(oligo_candidate)==2) & (count_BbsI(oligo_candidate)==2):
+            # require that no new homopolymers are created
+            if count_homopolymer(oligo, 4) == count_homopolymer(oligo_candidate, 4):
                 oligo = oligo_candidate
                 break
-
+            else:
+                    continue
+        else:
+            continue       
+    
     return oligo, filler_version
 
-def build_CROPseq_multi_one_step_oligos(
-    df_guides_input, 
-    spacer_1_col='spacer_1',
-    spacer_2_col='spacer_2', 
-    ibar1_col='iBAR_1', 
-    ibar2_col='iBAR_2', 
-    tRNA_col='tRNA', 
+def build_CROPseq_multi_two_step_oligos(
+    df_input, 
+    template,
+    spacer_1_column = 'spacer_1',
+    iBar_1_column ='iBAR_1',
+    spacer_2_column = 'spacer_2',
+    iBar_2_column ='iBAR_2',
+    tRNA_column = 'tRNA',
     dialout_fwd_col ='dialout_fwd',
     dialout_rev_col ='dialout_rev',
-    # column names
-    template = template_1_step_oligo
-):
+                         ):
     
-    df_guides = df_guides_input.copy()
+    # what to record:
+    # complete oligo sequence
+    # iBAR 1 and 2 sequences
+    # tRNA version
+    # dialout pair
+    
+    df = df_input.copy()
 
-    oligos = []
+    oligo_designs = []
     filler_versions = []
-
-    for spacer_1, spacer_2, iBAR_1, iBAR_2, tRNA, dialout_fwd, dialout_rev in df_guides[
-        [spacer_1_col, spacer_2_col, ibar1_col, ibar2_col, tRNA_col, dialout_fwd_col, dialout_rev_col]].values:
-
-        oligo, filler_version = build_CROPseq_multi_one_step_oligo(
-            spacer_1, iBAR_1, spacer_2, iBAR_2, filler_version=tRNA,
-            dialout_fwd=dialout_fwd, dialout_rev=dialout_rev,
-            template = template_1_step_oligo, 
-            )
+    for spacer_1, iBAR_1, spacer_2, iBAR_2, tRNA, dialout_fwd, dialout_rev in df[
+        [spacer_1_column, iBar_1_column, 
+         spacer_2_column, iBar_2_column, 
+         tRNA_column, 
+         dialout_fwd_col, dialout_rev_col]].values:
         
-        # final check for BsmBI and U6 terminator sequences
-        if (count_BsmBI(oligo)==2) & (oligo.find("TTTT")==-1) & (oligo.find("N")==-1):
-            pass
-        else:
-            errors = []
-            if count_BsmBI(oligo)!=2:
-                errors.append('%s BsmBI sites'%(count_BsmBI(oligo)!=2))
-            if contains_U6_term(oligo):
-                errors.append('contains "TTTT"')
-            if oligo.find("N")!=-1:
-                errors.append('degenerate bases present')
-            print('oligo failed with error(s): %s'%(', '.join(errors)), spacer_1, spacer_2, iBAR_1, iBAR_2 )
-            oligo='failed'
-        if filler_version != tRNA:
-            print('changed a tRNA from %s to %s'%(tRNA, filler_version))
+        oligo, filler_version = build_CROPseq_multi_two_step_oligo(
+            spacer_1, iBAR_1, spacer_2, iBAR_2, dialout_fwd, dialout_rev, 
+            filler_version=tRNA,
+            template = template_2_step_oligo)
         
-        oligos.append(oligo)
+        oligo_designs.append(oligo)
         filler_versions.append(filler_version)
-        
-    df_guides['oligo'] = oligos
-    df_guides['tRNA'] = filler_versions # because some may be changed
-
-    return df_guides
-
-
-##################################################################################################
-#                           build oligos for CROPseq-multi two-step cloning
-##################################################################################################
-
-# # Serial cloning steps with (1) BsmBI and then (2) BbsI assembly
-# # Shorter oligos, probably less PCR-mediated recombination, but requires serial cloning
-
-# # We're not currently recommending this alternate library construction approach
-
-# def build_CROPseq_multi_two_step_oligo(
-#     spacer_1, iBAR_1, spacer_2, iBAR_2,
-#     template, dialout_fwd, dialout_rev, filler_version=None,
-# ):
+    df['oligo'] = oligo_designs
+    df['tRNA'] = filler_versions
     
-#     def build_oligo(filler_seq):
-#         return template.format(
-#             dialout_fwd = dialout_fwd,
-#             CSM_BsmBI_left = CSM_BsmBI_left,
-#             spacer_1 = spacer_1,
-#             CSM_stem_1 = CSM_stem_1,
-#             iBAR_1 = reverse_complement(iBAR_1), # reverse complement iBARs
-#             BbsI_filler = filler_seq,
-#             spacer_2 = spacer_2,
-#             CSM_stem_2 = CSM_stem_2,
-#             iBAR_2 = reverse_complement(iBAR_2), # reverse complement iBARs
-#             CSM_BsmBI_right = CSM_BsmBI_right,
-#             dialout_rev = reverse_complement(dialout_rev),
-#         ).upper()
-    
-#     def fill_degenerate_bases(seq):
-#         while seq.find("N") != -1:
-#             n_index = seq.find("N")
-#             base = np.random.choice(['A','C','T','G'])
-#             seq = seq[:n_index] + base + seq[n_index+1:]
-#         return seq
-    
-#     # randomly select a BbsI filler version
-#     if filler_version is None:
-#         filler_version = np.random.choice(list(BbsI_fillers.keys()))
-#     filler_seq = BbsI_fillers[filler_version]
-    
-#     oligo = build_oligo(filler_seq)
-    
-#     # check for BsmBI, BbsI, and U6 terminator "TTTT" sites
-#     if (count_BsmBI(oligo)!=2) | (count_BbsI(oligo)!=2) | (oligo.find("TTTT")!=-1):
-#         oligo_temp = oligo
-#         oligo = "failed"
-#         # try to fix any with alternate tRNA choice
-#         for filler_version in BbsI_fillers.keys():
-#             filler_seq = BbsI_fillers[filler_version]
-#             oligo_candidate = build_oligo(filler_seq)
-#             if (count_BsmBI(oligo_candidate)==2) &\
-#                 (count_BbsI(oligo_candidate)==2) &\
-#                 (oligo_candidate.find("TTTT")==-1):
-#                 print('substituted original tRNA selection')
-#                 oligo = oligo_candidate
-#                 print(oligo)
-#                 break
-                
-#     # unable to remove BsmBI, BbsI, or U6 terminator "TTTT" motif
-#     if oligo == "failed":
-#         print('failed to remove BsmBI, BbsI, or U6 terminator')
-#         print(oligo_temp)
-#         return oligo, filler_version
-    
-#     # fill any "N" sequences with random choice while avioding homopolymers and RE sites 
-#     i=0
-#     while oligo.find("N") != -1:
-#         if i>50:
-#             print('failed to fill degenerate bases')
-#             print(oligo)
-#             oligo='failed'
-#             break
-#         i+=1
-#         oligo_candidate = fill_degenerate_bases(oligo)
-#         if (count_BsmBI(oligo_candidate)==2) & (count_BbsI(oligo_candidate)==2):
-#             # require that no new homopolymers are created
-#             if count_homopolymer(oligo, 4) == count_homopolymer(oligo_candidate, 4):
-#                 oligo = oligo_candidate
-#                 break
-#             else:
-#                     continue
-#         else:
-#             continue       
-    
-#     return oligo, filler_version
-
-# def build_CROPseq_multi_two_step_oligos(
-#     df_input, 
-#     template,
-#     spacer_1_column = 'spacer_1',
-#     iBar_1_column ='iBAR_1',
-#     spacer_2_column = 'spacer_2',
-#     iBar_2_column ='iBAR_2',
-#     tRNA_column = 'tRNA',
-#     dialout_fwd_col ='dialout_fwd',
-#     dialout_rev_col ='dialout_rev',
-#                          ):
-    
-#     # what to record:
-#     # complete oligo sequence
-#     # iBAR 1 and 2 sequences
-#     # tRNA version
-#     # dialout pair
-    
-#     df = df_input.copy()
-
-#     oligo_designs = []
-#     filler_versions = []
-#     for spacer_1, iBAR_1, spacer_2, iBAR_2, tRNA, dialout_fwd, dialout_rev in df[
-#         [spacer_1_column, iBar_1_column, 
-#          spacer_2_column, iBar_2_column, 
-#          tRNA_column, 
-#          dialout_fwd_col, dialout_rev_col]].values:
-        
-#         oligo, filler_version = build_CROPseq_multi_two_step_oligo(
-#             spacer_1, iBAR_1, spacer_2, iBAR_2, dialout_fwd, dialout_rev, 
-#             filler_version=tRNA,
-#             template = template_2_step_oligo)
-        
-#         oligo_designs.append(oligo)
-#         filler_versions.append(filler_version)
-#     df['oligo'] = oligo_designs
-#     df['tRNA'] = filler_versions
-    
-#     return df
+    return df
 
 
 
