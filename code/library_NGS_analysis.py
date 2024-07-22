@@ -55,7 +55,7 @@ def ratio_9010(arr, percentile=10):
 
 
 
-def extract_barcodes_from_fastq_pair(fastq_pair):
+def extract_barcodes_from_fastq_pair(fastq_pair, use_tRNA=False):
 	"""
 	parse pair of read 1 and read 2 fastq files and extract sequences
 	"""
@@ -98,21 +98,32 @@ def extract_barcodes_from_fastq_pair(fastq_pair):
 
 	df_barcodes['tRNA']= df_barcodes['tRNA_10'].map(tRNA_seq_dict)
 
-	df_barcodes['unique_barcode_combo'] =\
-		df_barcodes['spacer_1'] + '-' + df_barcodes['iBAR_1'] + \
-		'-' + df_barcodes['tRNA'] + '-' + \
-		df_barcodes['spacer_2'] +'-'+ df_barcodes['iBAR_2']
+	if use_tRNA:
+		df_barcodes['unique_barcode_combo'] =\
+			df_barcodes['spacer_1'] + '-' + df_barcodes['iBAR_1'] + \
+			'-' + df_barcodes['tRNA'] + '-' + \
+			df_barcodes['spacer_2'] +'-'+ df_barcodes['iBAR_2']
+	else:
+		df_barcodes['unique_barcode_combo'] =\
+			df_barcodes['spacer_1'] + '-' + df_barcodes['iBAR_1'] + '-' + \
+			df_barcodes['spacer_2'] +'-'+ df_barcodes['iBAR_2']	
+
 	df_barcodes
 
 	return df_barcodes
 
 
-def count_constructs(lib_info_df, lib_design_df):
+def count_constructs(lib_info_df, lib_design_df, use_tRNA=False):
 
-	lib_design_df['unique_barcode_combo'] =\
-		lib_design_df['spacer_1'] + '-' + lib_design_df['iBAR_1'] + \
-		'-' + lib_design_df['tRNA'] + '-' + \
-		lib_design_df['spacer_2'] + '-' + lib_design_df['iBAR_2']
+	if use_tRNA:
+		lib_design_df['unique_barcode_combo'] =\
+			lib_design_df['spacer_1'] + '-' + lib_design_df['iBAR_1'] + \
+			'-' + lib_design_df['tRNA'] + '-' + \
+			lib_design_df['spacer_2'] + '-' + lib_design_df['iBAR_2']
+	else:
+		lib_design_df['unique_barcode_combo'] =\
+			lib_design_df['spacer_1'] + '-' + lib_design_df['iBAR_1'] + '-' + \
+			lib_design_df['spacer_2'] + '-' + lib_design_df['iBAR_2']
 
 	lib_design_index = {k:v for (v,k) in lib_design_df['unique_barcode_combo'].to_dict().items()}
 
@@ -123,7 +134,7 @@ def count_constructs(lib_info_df, lib_design_df):
 		
 		fastq_pair = [row['fastq_R1'], row['fastq_R2']]
 		
-		df_barcodes = extract_barcodes_from_fastq_pair(fastq_pair)
+		df_barcodes = extract_barcodes_from_fastq_pair(fastq_pair, use_tRNA=use_tRNA)
 		
 		# map individual elements
 		df_barcodes['spacer_1_map'] = df_barcodes['spacer_1'].isin(lib_design_df['spacer_1'])
@@ -131,6 +142,7 @@ def count_constructs(lib_info_df, lib_design_df):
 		df_barcodes['spacer_2_map'] = df_barcodes['spacer_2'].isin(lib_design_df['spacer_2'])
 		df_barcodes['iBAR_2_map'] = df_barcodes['iBAR_2'].isin(lib_design_df['iBAR_2'])
 		df_barcodes['tRNA_map'] = df_barcodes['tRNA'].notna()
+
 		# map full constructs
 		df_barcodes['design_index'] = df_barcodes['unique_barcode_combo'].map(lib_design_index)
 
@@ -159,10 +171,24 @@ def count_constructs(lib_info_df, lib_design_df):
 		df_summary.loc[row['sample_ID'], 'replicate'] = row['replicate']
 		df_summary.loc[row['sample_ID'], 'tot_reads'] = len(df_barcodes)
 		df_barcodes_mapped = df_barcodes[df_barcodes['design_index'].notna()]
-		df_summary.loc[row['sample_ID'], 'all_elements_mapped'] =  (
-			df_barcodes['spacer_1_map'] & df_barcodes['iBAR_1_map'] &\
-			df_barcodes['tRNA_map'] & df_barcodes['spacer_2_map'] & df_barcodes['iBAR_2_map']
-			).sum()
+
+		df_summary.loc[row['sample_ID'], 'spacer_1_map'] = df_barcodes['spacer_1_map'].sum()/len(df_barcodes)
+		df_summary.loc[row['sample_ID'], 'iBAR_1_map'] = df_barcodes['iBAR_1_map'].sum()/len(df_barcodes)
+		df_summary.loc[row['sample_ID'], 'spacer_2_map'] = df_barcodes['spacer_2_map'].sum()/len(df_barcodes)
+		df_summary.loc[row['sample_ID'], 'iBAR_2_map'] = df_barcodes['iBAR_2_map'].sum()/len(df_barcodes)
+		df_summary.loc[row['sample_ID'], 'tRNA_map'] = df_barcodes['tRNA_map'].sum()/len(df_barcodes)
+			       
+		if use_tRNA:
+			df_summary.loc[row['sample_ID'], 'all_elements_mapped'] =  (
+				df_barcodes['spacer_1_map'] & df_barcodes['iBAR_1_map'] &\
+				df_barcodes['tRNA_map'] & df_barcodes['spacer_2_map'] & df_barcodes['iBAR_2_map']
+				).sum()
+		else:
+			df_summary.loc[row['sample_ID'], 'all_elements_mapped'] =  (
+				df_barcodes['spacer_1_map'] & df_barcodes['iBAR_1_map'] &\
+				df_barcodes['spacer_2_map'] & df_barcodes['iBAR_2_map']
+				).sum()
+		
 		df_summary.loc[row['sample_ID'], 'mapped_constructs'] = len(df_barcodes_mapped)
 		# frequencies of mapping and recombination
 		df_summary.loc[row['sample_ID'], 'pct_mapped'] = df_summary.loc[row['sample_ID'], 'mapped_constructs']/\
