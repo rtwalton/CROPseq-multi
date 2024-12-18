@@ -675,7 +675,7 @@ def build_CROPseq_multi_one_step_oligos(
     template = template_1_step_oligo
 ):
     
-    df_guides = df_guides_input.copy()
+    df_guides = df_guides_input.reset_index(drop=True).copy()
 
     # start by checking whether some columns were specified
 
