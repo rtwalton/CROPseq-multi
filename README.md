@@ -1,3 +1,7 @@
+<h1 align="center"> CROPseq-multi: a versatile solution for multiplexed perturbation and decoding in pooled CRISPR screens</h1>
+
+... now even more versatile(!) with CROPseq-multi-v2
+
 ### Code for library design and NGS analysis of CROPseq-multi libraries.
 
 <p align="center">
