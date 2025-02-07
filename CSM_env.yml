@@ -207,4 +207,5 @@ dependencies:
   - zstd=1.5.5
   - pip:
     - biopython==1.83
+    - levenshtein==0.26.1
 prefix: /Users/rwalton/opt/miniconda3/envs/CSM
