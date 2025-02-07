@@ -36,6 +36,7 @@ seaborn
 sys
 time
 tqdm
+levenshtein
 ```
 
 ### Usage:
