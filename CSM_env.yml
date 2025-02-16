@@ -208,4 +208,5 @@ dependencies:
   - pip:
     - biopython==1.83
     - levenshtein==0.26.1
+    - iteround==1.0.4
 prefix: /Users/rwalton/opt/miniconda3/envs/CSM

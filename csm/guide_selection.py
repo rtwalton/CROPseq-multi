@@ -1,13 +1,8 @@
-import os
 import pandas as pd
 import numpy as np
 import random
-from tqdm import tqdm
 import warnings
-import Levenshtein
-import math
-import itertools
-
+import iteround
 from constants import *
 from utils import *
 
@@ -26,6 +21,28 @@ def filter_guides(
     """
     filter spacers for compatibility in positions of the vector
     expects CRISPick output as input format
+    
+    Parameters
+    ----------
+    guides_df : pandas.DataFrame
+        DataFrame containing CRISPick guide output with columns including 'sgRNA Sequence'
+    position_req : str, optional
+        Requirement for guide compatibility in vector positions. Options are:
+        - 'any': guide must work in at least one position (default)
+        - 'all': guide must work in all positions
+    tRNA_req : str, optional
+        tRNA requirement for second position. Options are:
+        - 'any': no specific tRNA requirement (default)
+        - 'all': guide must work with all tRNAs, passed to check_spacer_2()
+    single_guide : bool, optional
+        If True, only checks compatibility for single guide format. Default False.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Filtered DataFrame containing only guides meeting the position requirements.
+        Adds boolean columns 'spacer1_check' and 'spacer2_check' (if not single_guide)
+        indicating compatibility in each position.
 
     """
     
@@ -158,7 +175,7 @@ def pair_guides_single_target_CRISPick(
             
             # print a warning if we run out of guides for a target
             if len(spacer_candidates)<2 :
-                print('ran out of guides for target ',target)
+                print(f'ran out of guides for {target}')
                 break
          
             spacer_a = spacer_candidates[0]
@@ -193,10 +210,35 @@ def pair_guides_single_target_controls(
     modality = 'CRISPRko',
 ):
     """
+    Pairs guides for single target controls based on the specified modality.
 
-    modality (str): 'CRISPRko', 'CRISPRi', and 'CRISPRa' are implemented. Changes guide selection for
-    olfactory receptors.
+    Parameters
+    ----------
+    n_OR_genes : int, optional
+        Number of olfactory receptor genes to select. Default is 0.
+    n_OR_constructs_per_gene : int, optional
+        Number of constructs per olfactory receptor gene. Default is 0.
+    n_intergenic_constructs : int, optional
+        Number of intergenic constructs to design. Default is 100.
+        Intergenic constructs will be selected proportionally across chromosomes.
+    n_nontargeting_constructs : int, optional
+        Number of non-targeting constructs to design. Default is 100.
+    modality : str, optional
+        Specifies the modality for guide selection. Currently only impacts olfactory receptor guide selection.
+        Options are:
+        - 'CRISPRko': Knockout modality
+        - 'CRISPRi': Interference modality
+        - 'CRISPRa': Activation modality
+        Default is 'CRISPRko'.
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame containing paired guides for olfactory receptor, intergenic, and non-targeting controls.
+        Columns include 'target', 'target_symbol', 'spacer_1', 'spacer_2', 'spacer_1_pick_order', 
+        'spacer_2_pick_order', 'target_version', and 'category'.
     """
+
 
     # read in guides targeting olfactory receptors
     if modality == 'CRISPRko':
@@ -209,30 +251,74 @@ def pair_guides_single_target_controls(
         raise ValueError(
             f'modality {modality} not recognized. Options are "CRISPRko", "CRISPRi", and "CRISPRa"')
     
-    # select 50 olfactory receptor genes (at random) and design 2 constructs per gene
+    # select n_OR_genes olfactory receptor genes (at random) and design n_OR_constructs_per_gene
     OR_targeting_pairs = pair_guides_single_target_CRISPick(
         df_OR, 
-        n_genes = n_OR_genes, # select 50 genes from df_OR at random
+        n_genes = n_OR_genes, # select n_OR_genes olfactory receptor genes (at random)
         constructs_per_gene=n_OR_constructs_per_gene,
     )  
     OR_targeting_pairs['category']='OLFACTORY_RECEPTOR'
 
-    # intergenic controls
+    # select intergenic controls
+    # especially for CRISPRko, we will take care of how we pair guides
     df_intergenic_guides = pd.read_table('input_files/CRISPick_intergenic_guides.txt')
-    df_intergenic_guides['Target Gene ID'] = 'INTERGENIC_CONTROL'
-    df_intergenic_guides['Target Gene Symbol'] = 'INTERGENIC_CONTROL'
-    intergenic_targeting_pairs = pair_guides_single_target_CRISPick(
-        df_intergenic_guides, constructs_per_gene=n_intergenic_constructs)
+    # distribute selection proportionally across chromosomes
+    n_intergenic_constructs_per_gene = { chr:x for (chr, x) in zip(
+        df_intergenic_guides.value_counts('Target Gene Symbol').index, 
+        [int(i) for i in iteround.saferound(
+            df_intergenic_guides.value_counts('Target Gene Symbol') / len(df_intergenic_guides) * n_intergenic_constructs, 0)
+            ])}
+
+    intergenic_targeting_pairs = []
+    rng = np.random.default_rng(seed=0)
+
+    for target in df_intergenic_guides['Target Gene Symbol'].unique():
+        
+        target_df = df_intergenic_guides[df_intergenic_guides['Target Gene Symbol'] == target].copy().reset_index(drop=True)
+        
+        # # select the guide pair, randomly pairing guides within a chromosome
+        # intergenic_targeting_pairs.append(
+        #     pair_guides_single_target_CRISPick(
+        #         target_df, constructs_per_gene=n_intergenic_constructs_per_gene[target]
+        #         ))
+    
+        # now we can determine guide pairing prioritization
+        # we will prioritize guides closer together
+
+        for n in range(n_intergenic_constructs_per_gene[target]):
+            
+            # select a random guide
+            selected_guide = target_df.iloc[rng.choice(len(target_df))]
+
+            # rank "Pick Order" by distance from the selected guide
+            selected_position = selected_guide['cutsite']
+            target_df['distance_from_selected'] = target_df['cutsite'].apply(lambda x: abs(x - selected_position))
+            target_df.sort_values('distance_from_selected', ascending=False)
+            target_df['Pick Order'] = target_df.index + 1
+
+            # select the guide pair, prioritizing guides closer together
+            guide_pair = pair_guides_single_target_CRISPick(target_df, constructs_per_gene=1, 
+                                                            pairing_method='descending')
+
+            # remove guides that were selected for this construct
+            used_picks = [guide_pair['spacer_1_pick_order'].values[0]] + [guide_pair['spacer_2_pick_order'].values[0]]
+            target_df = target_df[~target_df['Pick Order'].isin(used_picks)].reset_index(drop=True)
+            # record the guide pair
+            intergenic_targeting_pairs.append(guide_pair)
+
+            # if we run out of guides, print a warning and break
+            if len(target_df)<2:
+                print(f'ran out of guides for {target}')
+                break
+
+    intergenic_targeting_pairs = pd.concat(intergenic_targeting_pairs, ignore_index=True)
     intergenic_targeting_pairs['category']='INTERGENIC_CONTROL'
     
-    # nontargeting controls
+    # select nontargeting controls
     df_nontargeting_guides = pd.read_table('input_files/CRISPick_nontargeting_guides.txt')
-    df_nontargeting_guides['Target Gene ID'] = 'NONTARGETING_CONTROL'
-    df_nontargeting_guides['Target Gene Symbol'] = 'NONTARGETING_CONTROL'
     non_targeting_pairs = pair_guides_single_target_CRISPick(
         df_nontargeting_guides, constructs_per_gene=n_nontargeting_constructs)
     non_targeting_pairs['category']='NONTARGETING_CONTROL'
-
     
     return pd.concat([ OR_targeting_pairs,  non_targeting_pairs, intergenic_targeting_pairs,
                       ], ignore_index=True).reset_index(drop=True)
@@ -247,19 +333,38 @@ def pair_guides_target_and_control_CRISPick(
     ):
 
     """
-    Pair gene targeting guides with controls (e.g. nontargeting, intergenic, olfactory receptors)
-    guide input should be CRISPick output format
+    Pairs gene-targeting guides with control guides (e.g. nontargeting, intergenic, olfactory receptors)
+      to create dual-guide constructs.
 
-    guide_input_df (pd.DataFrame): CRISPick output with selected guides targeting genes.
-    control_guides_df (pd.DataFrame): CRISPick output with control guides (e.g. nontargeting, 
-        intergenic, olfactory receptors). Control guides will be reused.
-    constructs_per_gene (int): Number of constructs to design per gene. This many unique 
-        gene-targeting guides will be selected, prioritizing by "Pick Order", and paired 
-        with control guides
-    tRNA_req (str): whether guides (spacer sequences) must be compatible with 'any' tRNA or
-        with 'all' tRNAs
+    Parameters
+    ----------
+    guide_input_df : pandas.DataFrame
+        CRISPick output containing guides targeting genes of interest. Must include columns:
+        'sgRNA Sequence', 'Target Gene Symbol', and 'Pick Order'.
+    control_guides_df : pandas.DataFrame 
+        CRISPick output containing control guides (e.g. nontargeting, intergenic, or olfactory 
+        receptor guides). Must include column 'sgRNA Sequence'. Control guides may be reused 
+        across multiple constructs.
+    constructs_per_gene : int, default 4
+        Number of constructs to design per target gene. This many unique gene-targeting guides 
+        will be selected per gene, prioritizing by "Pick Order", and each paired with a 
+        randomly selected control guide.
+    tRNA_req : {'any', 'all'}, default 'all'
+        Whether guide sequences must be compatible with any tRNA ('any') or all tRNAs ('all')
+        when used in the second position of the construct.
+    rand_seed : int, default 0
+        Random seed for reproducible guide pairing.
 
-    Returns pd.DataFrame with gene-targeting guides paired to control guides
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame containing paired guides with columns:
+        - target: Target gene symbol
+        - targeting_spacer: Guide sequence targeting the gene
+        - control_spacer: Control guide sequence
+        - target_spacer_pos: Position (1 or 2) of targeting guide in construct
+        - spacer_1: Guide sequence in first position
+        - spacer_2: Guide sequence in second position
     
     """
         
@@ -329,23 +434,44 @@ def pair_guides_for_GI_CRISPick(
     ):
 
     """
-    gene_pairs (list): a list of CRISPick gene symbols for which single- and dual-targeting
-        constructs are to be designed.
+    Pairs guides for genetic interaction (GI) experiments using CRISPick-designed guides.
+    Creates constructs with single and dual gene targeting, positioning guides in specific 
+    vector positions and pairing them with control guides.
+
+    Parameters
+    ----------
+    gene_pairs : list
+        List of tuples containing pairs of gene symbols (e.g. [('geneA','geneB'), ...])
+        for which single- and dual-targeting constructs will be designed.
     
-    GI_input_df (pd.DataFrame): DataFrame that describes the specific way that all constructs
-        for each genetic interaction are to be designed. For example, how many single- and 
-        dual-targeting constructs should be designed, how pick order should be used in pairing
-        guides, how spacers should be positioned, which tRNAs to use, etc. 
+    GI_input_df : pandas.DataFrame
+        DataFrame specifying the design parameters for each genetic interaction construct.
+        Required columns include:
+        - target_pos1, target_pos2: Which target (A/B/ctrl) goes in each position
+        - spacer_version_pos1, spacer_version_pos2: Which guide version to use
+        - tRNA_version: Which tRNA to use (optional, will randomly assign if not specified)
         See example in 'input_files/GI_set_design.csv'
     
-    guide_input_df (pd.DataFrame): CRISPick output with selected guides targeting genes.
+    guide_input_df : pandas.DataFrame
+        CRISPick output containing guides targeting the genes of interest.
+        Must include columns: 'Target Gene Symbol', 'sgRNA Sequence', 'Pick Order'
     
-    control_guides_df (pd.DataFrame): CRISPick output with control guides (e.g. nontargeting, 
-        intergenic, olfactory receptors). Control guides will be reused. Control guides are 
-        paired with gene-targeting guides for sigle-gene targeting constructs.
+    control_guides_df : pandas.DataFrame
+        CRISPick output containing control guides (e.g. nontargeting, intergenic).
+        Must include column 'sgRNA Sequence'. Control guides will be reused and
+        paired with gene-targeting guides for single-gene targeting constructs.
         
-    tRNA_req (str): whether guides (spacer sequences) must be compatible with 'any' tRNA or
-        with 'all' tRNAs    
+    tRNA_req : str, optional
+        Whether guides must be compatible with 'any' tRNA or with 'all' tRNAs.
+        Default is 'all'.
+        
+    rand_seed : int, optional
+        Random seed for reproducibility. Default is 0.
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame containing the paired guides and their positions for each construct.
     """
     
     rng = np.random.default_rng(seed=rand_seed)

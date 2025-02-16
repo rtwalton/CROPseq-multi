@@ -1,12 +1,11 @@
-import os
+
 import pandas as pd
 import numpy as np
 import random
-from tqdm import tqdm
+import tqdm.notebook as tqdm
 import warnings
 import Levenshtein
 import math
-import itertools
 from glob import glob
 
 from constants import *
@@ -19,10 +18,29 @@ from utils import *
 
 def automated_iBAR_assignment(df, distance=3, method='positional'):
     """
-    Import barcode sets and interate through until an appropriate set is found
-    given the distance requirement and barcode pairing method, for the provided dataframe (df).
+    Automatically assign barcode pairs to a DataFrame by selecting an appropriate pre-designed barcode set.
+    Wrapper for select_complete_and_pair_barcodes()
 
-    Return the provided dataframe with barcode pairs added.
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame to assign barcodes to. Each row will get a unique barcode pair.
+    distance : int, optional
+        Minimum edit distance required between barcodes. Default is 3.
+    method : str, optional
+        Method for pairing barcodes. Options are:
+        - 'positional': Position encoded in first base (default)
+        - 'random_unique': Random unique barcodes independent of position
+        - 'random_shared': Position-specific but shared between positions
+        - 'matched': Identical barcodes in both positions
+        See select_complete_and_pair_barcodes() for detailed descriptions.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Input DataFrame with additional columns for barcode pairs:
+        - 'iBAR1': First barcode sequence
+        - 'iBAR2': Second barcode sequence
     """
 
     # import all the barcode sets:
@@ -490,20 +508,32 @@ def complete_iBARs_single_guide(
 
 def determine_minimal_cycle_number(sequence_list, dual=False, directional=False):
     """
-    determine minimal cycle number to uniquely identify all sequences in a set
-    it is critical that barcodes are provided in the orientation that they are sequenced,
-    and not the reverse complement!
+    Determine the minimum number of sequencing cycles needed to uniquely identify all sequences in a set.
+    
+    Parameters
+    ----------
+    sequence_list : list of str
+        List of barcode sequences to analyze. Must be provided in the orientation they will be 
+        sequenced (not the reverse complement!).
+    dual : bool, optional
+        Whether sequences are dual barcodes are read out simultaneously. If True, expects
+        barcodes of equal length separated by "_" delimiter (e.g. "iBAR1_iBAR2"). Default is False.
+    directional : bool, optional 
+        Whether barcode order/position matters for dual barcodes. Only used if dual=True.
+        If True, "A_B" is considered distinct from "B_A".
+        If False, "A_B" and "B_A" are considered equivalent.
+        For example, with dual iBARs:
+        - If iBARs are labeled (e.g. with fluorescent oligos), set directional=True since 
+          iBAR1 and iBAR2 can be distinguished.
+        - If iBARs are unlabeled and read simultaneously, set directional=False since the 
+          mapping of barcodes to iBAR1/iBAR2 positions is ambiguous.
+        Default is False.
 
-    sequence_list: list of strings
-    dual: dual barcodes read out simultaneously,
-        barcodes of equal length, separated by "_" delimiter
-        i.e. for dual iBARs: iBAR1_iBAR2
-    directional: whether or not barcodes can be assigned to position 1 and 2
-        True if A_B can be distinguished from B_A
-        False if A_B is indistinguishable from B_A
-        i.e. for dual iBARs, if both iBARs are read out simultaneously without labeling,
-        then the mapping of the two barcodes to iBARs 1 and 2 is not necessarily known.
-        If one iBAR is labeled (e.g. with a fluorescent oligo), then the mapping is known.
+    Returns
+    -------
+    int or None
+        Minimum number of cycles needed for unique identification.
+        Returns None if sequences cannot be uniquely identified.
     """
     
     n_seq = len(sequence_list)        
@@ -543,13 +573,25 @@ def test_recombination_detection(
     n_test=5000,
 ):
     """
-    Simulate recombination and determine the frequency of detection as a function
-    of sequencing cycles for multiplexed detection.
+    Simulate recombination events between barcode pairs and determine how many sequencing cycles 
+    are needed to detect the recombined barcodes as invalid pairs.
 
-    barcode_pairs (pd.DataFrame): dataframe with barcode pairs
-    directional (bool): Whether relative position of barcodes is known. i.e. whether or not 
-    A-B can be distinguished from B-A. Default is True (A-B can be distinguished from A-B).
-    n_test (int): number of recombination events to simulate
+    Parameters
+    ----------
+    barcode_pairs : pandas.DataFrame
+        DataFrame containing barcode pairs, with columns 'bc1' and 'bc2' containing the barcode sequences
+    directional : bool, optional
+        Whether the relative position of barcodes can be determined experimentally. If True, barcode pair A-B 
+        can be distinguished from B-A. If False, A-B and B-A are treated as equivalent. Default is True.
+    n_test : int, optional
+        Number of recombination events to simulate. Default is 5000.
+
+    Returns
+    -------
+    dict
+        Dictionary mapping number of sequencing cycles to fraction of recombination events detected.
+        Keys are integers representing number of cycles, values are floats between 0 and 1 representing
+        the fraction of recombination events that can be detected with that many cycles.
     """
     
     n_pairs = len(barcode_pairs)
@@ -607,16 +649,39 @@ def check_barcode_pair_cycle_requirements(
     check_distance = False,
 ):
     """
-    Determine the number of sequencing cycles needed to uniquely identify library members 
+    Determine the minimum number of sequencing cycles needed to uniquely identify library members 
     with various decoding strategies. Particularly relevant for in situ sequencing approaches.
 
-    barcode_pair_df (pd.DataFrame): dataframe with pairs of barcodes
-    barcode_1 (str): column name for barcode 1 (typically 'iBAR_1')
-    barcode_2 (str): column name for barcode 2 (typically 'iBAR_2')
-    check_distance (bool): check Levenshtein distances for error detection and correction. 
-    Default is False. This is typically guaranteed based on the initial selection of barcode candidates.
+    This function analyzes barcode pairs to determine:
+    1. Cycles needed for unique identification using only barcode 1
+    2. Cycles needed for unique identification using only barcode 2 
+    3. Cycles needed for unique identification of any barcode from the set (barcode 1 and barcode 2)
+    4. Cycles needed for unique identification of any construct using multiplexed decoding of barcode 1 and barcode 2
+    5. Cycles needed for unique identification of any construct using directional multiplexed decoding of barcodes 1 and 2 when 
+       the relative positions of the barcodes can NOT be determined experimentally (i.e. A-B can NOT be distinguished from B-A)
+       - also quantifies the ability to detect recombination events
+    6. Cycles needed for unique identification of any construct using directional multiplexed decoding (i.e. A-B can when 
+       the relative positions of the barcodes can be determined experimentally (i.e. A-B can be distinguished from B-A)
+        - also quantifies the ability to detect recombination events
 
+    Parameters
+    ----------
+    barcode_pair_df : pandas.DataFrame
+        DataFrame containing pairs of barcodes, with columns for barcode 1 and barcode 2
+    barcode_1 : str, optional
+        Column name for first barcode in pair, by default 'iBAR_1'
+    barcode_2 : str, optional
+        Column name for second barcode in pair, by default 'iBAR_2'
+    check_distance : bool, optional
+        Whether to verify Levenshtein distances between barcodes for error detection/correction.
+        By default False since this is typically guaranteed by initial barcode selection.
+
+    Returns
+    -------
+    None
+        Results are printed to stdout
     """
+
     
     barcode_1_cycles = determine_minimal_cycle_number(barcode_pair_df[barcode_1].values)
     barcode_2_cycles = determine_minimal_cycle_number(barcode_pair_df[barcode_2].values)
@@ -702,10 +767,28 @@ def check_cycle_requirements_correct_detect(sequence_list, cycle_start):
 
 def barcode_distance_matrix(barcodes_1, barcodes_2=False, distance_metric='levenshtein'):
     """
-    Expects list of barcodes for barcodes_1, optionally barcodes_2 as well.
-    If barcodes_2 is False, find self-distances for barcodes_1.
-    Returns distance matrix.
+    Calculate pairwise distances between sequences in two lists of barcodes.
+
+    Parameters
+    ----------
+    barcodes_1 : list
+        First list of barcode sequences
+    barcodes_2 : list or bool, optional
+        Second list of barcode sequences. If False (default), calculates distances
+        between all pairs in barcodes_1.
+    distance_metric : str, optional
+        Method for calculating sequence distances. Options are:
+        - 'hamming': Hamming distance (number of positions that differ)
+        - 'levenshtein': Levenshtein distance (minimum number of edits required)
+        Default is 'hamming'.
+
+    Returns
+    -------
+    numpy.ndarray
+        2D array of shape (len(barcodes_1), len(barcodes_2)) containing the
+        pairwise distances between sequences.
     """
+
     if distance_metric == 'hamming':
         distance = lambda i, j: Levenshtein.hamming(i, j)
     elif distance_metric == 'levenshtein':
