@@ -64,35 +64,6 @@ def filter_guides(
 
     return guides_df
 
-def select_single_guides_CRISPick(
-    guide_input_df, 
-    constructs_per_gene=4,
-    ):
-    """
-    select guides to clone a single guide into CROPseq-multi
-    """
-
-    selected_guides = pd.DataFrame()
-
-    # check spacer compatibility
-    guide_input_df['spacer_check']= guide_input_df['sgRNA Sequence'].apply(check_spacer_1, single_guide=True)
-
-    for target, target_df in guide_input_df.groupby('Target Gene Symbol'):
-        target_df.sort_values('Pick Order', inplace=True)
-        
-        target_guides = target_df[target_df['spacer_check']]['sgRNA Sequence'].values[:constructs_per_gene]
-        # print a warning if we run out of guides for a target
-        if (len(target_df)==0):
-            warnings.warn('ran out of guides for target ',target)
-
-        selected_guides = pd.concat(
-            [selected_guides,
-            pd.DataFrame(data=target_guides, columns=['target','spacer'])
-            ])
-
-    selected_guides['target_version'] = selected_guides.index.astype(int) + 1
-    selected_guides.reset_index(inplace=True, drop=True)
-
 
 def pair_guides_single_target_CRISPick(
     guide_input_df, constructs_per_gene=3, 
@@ -334,7 +305,8 @@ def pair_guides_target_and_control_CRISPick(
 
     """
     Pairs gene-targeting guides with control guides (e.g. nontargeting, intergenic, olfactory receptors)
-      to create dual-guide constructs.
+      to create dual-guide constructs where one guide targets the gene of interest and the other guide
+      targets a randomly selected control.
 
     Parameters
     ----------
@@ -434,9 +406,10 @@ def pair_guides_for_GI_CRISPick(
     ):
 
     """
-    Pairs guides for genetic interaction (GI) experiments using CRISPick-designed guides.
-    Creates constructs with single and dual gene targeting, positioning guides in specific 
-    vector positions and pairing them with control guides.
+    Pairs guides for genetic interaction (GI) experiments. Uses CRISPick-designed guides.
+    For two genes, A and B, this is typically used to create constructs targeting combinations
+    of A + control, B + control, and A + B. The exact design of a genetic interaction set
+    can be customized.
 
     Parameters
     ----------
@@ -541,3 +514,70 @@ def pair_guides_for_GI_CRISPick(
 
     return guide_pairs_df
 
+
+def select_single_guides_CRISPick(
+    guide_input_df, 
+    constructs_per_gene=4,
+    target_col = 'Target Gene Symbol',
+    spacer_col = 'sgRNA Sequence',
+    ):
+    """
+    Select guides to clone a single guide into CROPseq-multi. This is a non-standard use of CROPseq-multi, 
+    analagous to the usage of a standard CROPseq vector (with some added functionalities for iBARs and 
+    in situ detection performance).
+
+    **For most applications, including single-gene targeting and combinatorial libraries, dual-guide 
+    constructs are preferred.** However, some applications, such as base editor tiling screens, 
+    single-guide designs may be more appropriate.
+
+    Parameters
+    ----------
+    guide_input_df : pandas.DataFrame
+        Guides to select from. Often CRISPick output, but requires only two columns:
+        - target_col (identifier for the target of the guide)
+        - spacer_col (spacer sequence)
+            - defaults are the column names in the CRISPick output
+    constructs_per_gene : int or str, default 4
+        Number of constructs/guides to select per gene. If 'all', all compatible guides will 
+        be selected.
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame containing selected guides with columns:
+        - target: Target gene symbol
+        - spacer: Guide sequence
+        - target_version: Version number of the target gene
+    """
+
+    selected_guides = []
+
+    # check spacer compatibility
+    guide_input_df['spacer_check']= guide_input_df[spacer_col].apply(check_spacer_1, single_guide=True)
+
+    # check if 'Pick Order' is a column in the input df
+    if 'Pick Order' not in guide_input_df.columns:
+        warnings.warn('Pick Order column not found in input df. No prioritization will be used.')
+        guide_input_df['Pick Order'] = 0
+
+    for target, target_df in guide_input_df.groupby(target_col):
+        target_df.sort_values('Pick Order', inplace=True)
+        
+        target_guides = target_df[target_df['spacer_check']]
+        # print a warning if we run out of guides for a target
+        if constructs_per_gene == 'all':
+            pass
+        elif (len(target_guides) < constructs_per_gene):
+            warnings.warn(f'ran out of guides for {target}')
+            if len(target_guides) == 0:
+                continue
+        else:
+            target_guides = target_guides[:constructs_per_gene]
+        selected_guides.append(target_guides[[target_col, spacer_col, 'Pick Order']])
+
+    selected_guides = pd.concat(selected_guides, ignore_index=True).rename(
+        columns={target_col:'target', spacer_col:'spacer', 'Pick Order':'pick_order'})
+    selected_guides.reset_index(inplace=True, drop=True)
+    selected_guides['target_version'] = selected_guides.groupby('target').cumcount() + 1
+
+    return selected_guides

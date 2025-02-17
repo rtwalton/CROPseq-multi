@@ -444,61 +444,7 @@ def determine_optimial_barcode_pairs(barcodes_1, barcodes_2, n_constructs):
     print('Failed to determine optimal barcode pairing.')
     return None
 
-#TODO: complete iBARs_single_guide
-def complete_iBARs_single_guide(
-    df, n_constructs,
-    max_it_degenerate_bases = 25,
-    verbose=1
-):
-    df_barcodes = df.sample(frac=1).copy() # important to randomize barcode order!
-    
-    # bring barcodes to length 12 with degenerate bases    
-    if len(df_barcodes['barcode'][0])!=12:
-        df_barcodes['barcode'] = df_barcodes['barcode'] + 'N'*(12-len(df_barcodes['barcode'][0]))
-    
-    # maintain homopolymer and GC limits from original design
-    homopolymer_max = df_barcodes['homopolymer'][0]
-    gc_min = df_barcodes['gc_min'][0]
-    gc_max = df_barcodes['gc_max'][0]
-    
-    iBARs_filtered = []
-    df_iBARs = pd.DataFrame()
 
-    if verbose>0:
-        print('generating and filtering complete iBARs')
-
-    for bc in tqdm(df_barcodes['barcode'],total=len(df_barcodes)):
-        i=0
-        while i<max_it_degenerate_bases:
-            i+=1
-            bc_filled = fill_degenerate_bases(bc)
-            if (calculate_gc(bc_filled) > gc_max) or\
-                   (calculate_gc(bc_filled) < gc_min) or\
-                   has_homopolymer(bc_filled, homopolymer_max):
-                continue
-
-            # check compatibility with flanking sequences
-            # single guide iBAR has flanking sequence of iBAR2
-            if (check_iBAR2(bc_filled)): 
-                iBARs_filtered.append(bc_filled)          
-                break
-            else:
-                continue
-    
-    if len(iBARs_filtered) < n_constructs:
-        print('Failed: Only %s barcodes after filtering. At least %s required.'%(len(iBARs_filtered), n_constructs))
-        return None
-    
-    df_iBARs['iBAR']= iBARs_filtered[:len(n_constructs)]
-
-    print('sequencing requirements:')
-    barcode_cycles = determine_minimal_cycle_number(df_iBARs['iBAR'].values)
-    if barcode_cycles is None:
-        print('barcodes are not unique')
-    else:
-        print('barcodes are unique in:\n %s cycles'% barcode_cycles)
-    
-    return df_iBARs
 
 
 ##################################################################################################
@@ -808,3 +754,125 @@ def barcode_distance_matrix(barcodes_1, barcodes_2=False, distance_metric='leven
 
     return bc_distance_matrix
 
+
+
+##################################################################################################
+#                            iBAR selection for single-guide libraries
+##################################################################################################
+
+def select_and_complete_individual_barcodes(df, distance, **kwargs):
+    """
+    Select and complete individual barcodes from a set of barcode files - for use in single-guide 
+    libraries. Selects the barcode set with the shortest barcode length that can meet the required 
+    edit distance. 
+
+    Note that this function is not intended for dual-guide constructs, but instead for non-standard
+    use of CROPseq-multi to encode only a single guide and iBAR per construct.
+    
+    Parameters
+    ----------
+    df_bc_sets : pandas.DataFrame
+        DataFrame containing barcode files, with columns for barcode file name and number of barcodes.
+    n_barcodes : int
+        Number of barcodes to select.
+    distance : int
+        Minimum edit distance between barcodes. 
+    
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame containing the selected and completed barcodes.
+    """
+    
+    n_barcodes = len(df)
+    
+    # import all the barcode sets:
+    bc_sets = pd.DataFrame()
+    search = 'designed_barcode_sets/barcodes_n*_k*_*.noBsmBI.csv'
+    for file in glob(search):
+        df_barcodes = pd.read_csv(file)
+        bc_sets.loc[file, 'length'] = df_barcodes['n'][0]
+        bc_sets.loc[file, 'distance'] = df_barcodes['k'][0]
+        bc_sets.loc[file, 'metric'] = file.split('_')[-1].split('.')[0]
+        bc_sets.loc[file, 'n_barcodes'] = len(df_barcodes)
+
+    df_bc_sets_subset = bc_sets[(bc_sets['distance']==distance) & (bc_sets['n_barcodes']>=n_barcodes)]
+    
+    iBARs = None
+    while iBARs is None:
+        
+        if len(df_bc_sets_subset)==0:
+            print('\nRan out of barcode files')
+            break
+            
+        selected_bc_file = df_bc_sets_subset[df_bc_sets_subset['n_barcodes'] > n_barcodes].iloc[
+            df_bc_sets_subset[df_bc_sets_subset['n_barcodes'] > n_barcodes]['n_barcodes'].argmin()].name 
+        
+        df_barcodes = pd.read_csv(selected_bc_file)
+        
+        print('\nEdit distance %s in %s cycles'%(df_barcodes['k'][0],df_barcodes['n'][0]))
+
+        iBARs = complete_iBARs_single_guide(df_barcodes, n_barcodes, **kwargs)
+        
+        if iBARs is None:
+            df_bc_sets_subset = df_bc_sets_subset[df_bc_sets_subset.index != selected_bc_file]
+            print('\nTrying again with next smallest barcode set.')
+        else:
+            df['iBAR'] = iBARs['iBAR']
+            return df
+        
+
+def complete_iBARs_single_guide(
+    df, n_constructs,
+    max_it_degenerate_bases = 25,
+    verbose=1,
+):
+    df_barcodes = df.sample(frac=1).copy() # important to randomize barcode order!
+    
+    # bring barcodes to length 12 with degenerate bases    
+    if len(df_barcodes['barcode'][0])!=12:
+        df_barcodes['barcode'] = df_barcodes['barcode'] + 'N'*(12-len(df_barcodes['barcode'][0]))
+    
+    # maintain homopolymer and GC limits from original design
+    homopolymer_max = df_barcodes['homopolymer'][0]
+    gc_min = df_barcodes['gc_min'][0]
+    gc_max = df_barcodes['gc_max'][0]
+    
+    iBARs_filtered = []
+    df_iBARs = pd.DataFrame()
+
+    if verbose>0:
+        print('generating and filtering complete iBARs')
+
+    for bc in tqdm(df_barcodes['barcode'],total=len(df_barcodes)):
+        i=0
+        while i<max_it_degenerate_bases:
+            i+=1
+            bc_filled = fill_degenerate_bases(bc)
+            if (calculate_gc(bc_filled) > gc_max) or\
+                   (calculate_gc(bc_filled) < gc_min) or\
+                   has_homopolymer(bc_filled, homopolymer_max):
+                continue
+
+            # check compatibility with flanking sequences
+            # single guide iBAR has flanking sequence of iBAR2
+            if (check_iBAR2(bc_filled)): 
+                iBARs_filtered.append(bc_filled)          
+                break
+            else:
+                continue
+    
+    if len(iBARs_filtered) < n_constructs:
+        print('Failed: Only %s barcodes after filtering. At least %s required.'%(len(iBARs_filtered), n_constructs))
+        return None
+
+    df_iBARs['iBAR']= iBARs_filtered[:n_constructs]
+
+    print('sequencing requirements:')
+    barcode_cycles = determine_minimal_cycle_number(df_iBARs['iBAR'].values)
+    if barcode_cycles is None:
+        print('barcodes are not unique')
+    else:
+        print('barcodes are unique in:\n %s cycles'% barcode_cycles)
+    
+    return df_iBARs

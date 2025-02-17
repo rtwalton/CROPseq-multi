@@ -81,81 +81,6 @@ def generate_oligos(df, dialout=0):
 
     return oligo_design_df, failed_designs_df
 
-def build_CROPseq_multi_single_guide(
-    spacer, iBAR,
-    template, dialout_fwd, dialout_rev, 
-):
-    
-    def build_oligo():
-        return template.format(
-            dialout_fwd = dialout_fwd,
-            CSM_BsmBI_left = CSM_BsmBI_left,
-            spacer = spacer,
-            CSM_stem_2 = CSM_stem_2,
-            iBAR = reverse_complement(iBAR), # reverse complement iBAR
-            CSM_BsmBI_right = CSM_BsmBI_right,
-            dialout_rev = reverse_complement(dialout_rev),
-        ).upper()
-    
-    oligo = build_oligo()
-
-    # check for BsmBI and U6 terminator "TTTT" sites
-    if (count_BsmBI(oligo)!=2) | (oligo.find("TTTT")!=-1):
-        return None
-
-    return oligo
-
-
-def build_CROPseq_multi_single_guide_oligos(
-    df_guides_input, 
-    spacer_col='spacer',
-    ibar_col='iBAR', 
-    dialout_fwd_col ='dialout_fwd',
-    dialout_rev_col ='dialout_rev',
-    # column names
-    template = template_1_step_oligo_single_guide
-):
-    
-    df_guides = df_guides_input.copy()
-    oligos = []
-    failed_designs = pd.DataFrame()
-
-
-    # iterate through and design oligos
-    for index, row in df_guides.iterrows():
-
-        oligo, tRNA_selection = build_CROPseq_multi_single_guide(
-            row[spacer_col],
-            row[ibar_col],
-            dialout_fwd=row[dialout_fwd_col],
-            dialout_rev=row[dialout_rev_col],
-            template = template,
-            )
-
-        # final check for BsmBI and U6 terminator sequences
-        if (count_BsmBI(oligo)==2) & (oligo.find("TTTT")==-1) & (oligo.find("N")==-1):
-            pass
-        else:
-            errors = []
-            if count_BsmBI(oligo)!=2:
-                errors.append('%s BsmBI sites'%(count_BsmBI(oligo)))
-            if contains_U6_term(oligo):
-                errors.append('contains "TTTT"')
-            if oligo.find("N")!=-1:
-                errors.append('degenerate bases present')
-
-            failed_designs = pd.concat([failed_designs, df_guides.iloc[index:index+1]])
-            failed_designs.loc[index,'failure_cause'] = ', '.join(errors)
-            failed_designs.loc[index,'oligo'] = oligo
-
-            oligo='failed'
-        
-        oligos.append(oligo)
-        
-    df_guides['oligo'] = oligos
-
-    return df_guides, failed_designs
-
 
 def build_CROPseq_multi_one_step_oligo(
     spacer_1, iBAR_1, spacer_2, iBAR_2,
@@ -292,6 +217,105 @@ def build_CROPseq_multi_one_step_oligos(
     df_guides['tRNA'] = tRNA_choices # because some may be changed
     
     return df_guides, failed_designs
+
+
+
+##################################################################################################
+#                         build oligos for CROPseq-multi single-guide libraries
+##################################################################################################
+
+def build_CROPseq_multi_single_guide(
+    spacer, iBAR,
+    template, dialout_fwd, dialout_rev, 
+):
+    
+    def build_oligo():
+        return template.format(
+            dialout_fwd = dialout_fwd,
+            CSM_BsmBI_left = CSM_BsmBI_left,
+            spacer = spacer,
+            CSM_stem_2 = CSM_stem_2, # this is the stem in the vector backbone
+            iBAR = reverse_complement(iBAR), # reverse complement iBAR
+            CSM_BsmBI_right = CSM_BsmBI_right,
+            dialout_rev = reverse_complement(dialout_rev),
+        ).upper()
+    
+    oligo = build_oligo()
+
+    # check for BsmBI and U6 terminator "TTTT" sites
+    if (count_BsmBI(oligo)!=2) | (oligo.find("TTTT")!=-1):
+        return None
+
+    return oligo
+
+
+def build_CROPseq_multi_single_guide_oligos(
+    df, 
+    spacer_col='spacer',
+    ibar_col='iBAR', 
+    dialout_fwd_col ='dialout_fwd',
+    dialout_rev_col ='dialout_rev',
+    # column names
+    template = template_1_step_oligo_single_guide,
+    dialout=0,
+):
+    
+    oligos = []
+    failed_designs = pd.DataFrame()
+
+    # import dialout primer sequences
+    df_dialout = pd.read_csv('input_files/kosuri_dialout_primers.csv')
+    # dialout primers are truncated to 14 nt
+    # for single-guide libraries, "full length" dialout primers could be used without
+    # running into oligo length issues, however we will stick with 14 nt to match the
+    # dual-guide one-step cloning oligos, which require short dialout primers to keep the
+    # total oligo length within 300 nt
+    df_dialout['fwd_short'] = df_dialout['fwd'].str.slice(-14)
+    df_dialout['rev_short'] = df_dialout['rev'].str.slice(-14)
+
+    # here we encode all members under the same dialout primer pair
+    # sublibraries can be encoded within an order with different dialout primer pairs
+    df['dialout']=dialout
+
+    df['dialout_fwd'] = df['dialout'].map(df_dialout['fwd_short'])
+    df['dialout_rev'] = df['dialout'].map(df_dialout['rev_short'])
+
+
+    # iterate through and design oligos
+    for index, row in df.iterrows():
+
+        oligo = build_CROPseq_multi_single_guide(
+            row[spacer_col],
+            row[ibar_col],
+            dialout_fwd=row[dialout_fwd_col],
+            dialout_rev=row[dialout_rev_col],
+            template = template,
+            )
+
+        # final check for BsmBI and U6 terminator sequences
+        if (count_BsmBI(oligo)==2) & (oligo.find("TTTT")==-1) & (oligo.find("N")==-1):
+            pass
+        else:
+            errors = []
+            if count_BsmBI(oligo)!=2:
+                errors.append('%s BsmBI sites'%(count_BsmBI(oligo)))
+            if contains_U6_term(oligo):
+                errors.append('contains "TTTT"')
+            if oligo.find("N")!=-1:
+                errors.append('degenerate bases present')
+
+            failed_designs = pd.concat([failed_designs, df.iloc[index:index+1]])
+            failed_designs.loc[index,'failure_cause'] = ', '.join(errors)
+            failed_designs.loc[index,'oligo'] = oligo
+
+            oligo='failed'
+        
+        oligos.append(oligo)
+        
+    df['oligo'] = oligos
+    df['oligo_len'] = df['oligo'].str.len()
+
+    return df, failed_designs
 
 
 ##################################################################################################
