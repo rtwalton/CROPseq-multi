@@ -179,6 +179,7 @@ def pair_guides_single_target_controls(
     n_intergenic_constructs=100,
     n_nontargeting_constructs=100,
     modality = 'CRISPRko',
+    ko_intergenic_pairing_method='adjacent'
 ):
     """
     Pairs guides for single target controls based on the specified modality.
@@ -201,7 +202,11 @@ def pair_guides_single_target_controls(
         - 'CRISPRi': Interference modality
         - 'CRISPRa': Activation modality
         Default is 'CRISPRko'.
-
+    ko_intergenic_pairing_method : str, optional
+        Method for pairing intergenic guides in CRISPRko. Options are:
+        - 'adjacent': Pair guides that are roughly adjacent to each other on the same chromosome
+        - 'random': Randomly pair guides on the same chromosome
+        Default is 'adjacent'.
     Returns
     -------
     pandas.DataFrame
@@ -212,12 +217,8 @@ def pair_guides_single_target_controls(
 
 
     # read in guides targeting olfactory receptors
-    if modality == 'CRISPRko':
-        df_OR = pd.read_table('input_files/CRISPick_CRISPRko_OR_controls.txt')
-    elif modality == 'CRISPRi':
-        df_OR = pd.read_table('input_files/CRISPick_CRISPRi_OR_controls.txt')
-    elif modality == 'CRISPRa':
-        df_OR = pd.read_table('input_files/CRISPick_CRISPRa_OR_controls.txt')    
+    if modality in ['CRISPRko', 'CRISPRi', 'CRISPRa']:
+        df_OR = pd.read_table(f'input_files/CRISPick_{modality}_OR_controls.txt')
     else:
         raise ValueError(
             f'modality {modality} not recognized. Options are "CRISPRko", "CRISPRi", and "CRISPRa"')
@@ -243,44 +244,52 @@ def pair_guides_single_target_controls(
     intergenic_targeting_pairs = []
     rng = np.random.default_rng(seed=0)
 
-    for target in df_intergenic_guides['Target Gene Symbol'].unique():
-        
-        target_df = df_intergenic_guides[df_intergenic_guides['Target Gene Symbol'] == target].copy().reset_index(drop=True)
-        
-        # # select the guide pair, randomly pairing guides within a chromosome
-        # intergenic_targeting_pairs.append(
-        #     pair_guides_single_target_CRISPick(
-        #         target_df, constructs_per_gene=n_intergenic_constructs_per_gene[target]
-        #         ))
+    if ko_intergenic_pairing_method == 'adjacent':
+        for target in df_intergenic_guides['Target Gene Symbol'].unique():
     
-        # now we can determine guide pairing prioritization
-        # we will prioritize guides closer together
+            target_df = df_intergenic_guides[df_intergenic_guides['Target Gene Symbol'] == target].copy().reset_index(drop=True)
+            # now we can determine guide pairing prioritization
+            # we will prioritize guides closer together
+            for n in range(n_intergenic_constructs_per_gene[target]):
+                
+                # select a random guide
+                selected_guide = target_df.iloc[rng.choice(len(target_df))]
 
-        for n in range(n_intergenic_constructs_per_gene[target]):
-            
-            # select a random guide
-            selected_guide = target_df.iloc[rng.choice(len(target_df))]
+                # rank "Pick Order" by distance from the selected guide
+                selected_position = selected_guide['cutsite']
+                target_df['distance_from_selected'] = target_df['cutsite'].apply(lambda x: abs(x - selected_position))
+                target_df.sort_values('distance_from_selected', ascending=True, inplace=True)
+                target_df.reset_index(drop=True, inplace=True)
+                target_df['Pick Order'] = target_df.index + 1
 
-            # rank "Pick Order" by distance from the selected guide
-            selected_position = selected_guide['cutsite']
-            target_df['distance_from_selected'] = target_df['cutsite'].apply(lambda x: abs(x - selected_position))
-            target_df.sort_values('distance_from_selected', ascending=False)
-            target_df['Pick Order'] = target_df.index + 1
+                # select the guide pair, prioritizing guides closer together
+                guide_pair = pair_guides_single_target_CRISPick(
+                    target_df, constructs_per_gene=1, pairing_method='descending')
 
-            # select the guide pair, prioritizing guides closer together
-            guide_pair = pair_guides_single_target_CRISPick(target_df, constructs_per_gene=1, 
-                                                            pairing_method='descending')
+                # remove guides that were selected for this construct
+                used_picks = [guide_pair['spacer_1_pick_order'].values[0]] + [guide_pair['spacer_2_pick_order'].values[0]]
+                target_df = target_df[~target_df['Pick Order'].isin(used_picks)].reset_index(drop=True)
+                # record the guide pair
+                intergenic_targeting_pairs.append(guide_pair)
 
-            # remove guides that were selected for this construct
-            used_picks = [guide_pair['spacer_1_pick_order'].values[0]] + [guide_pair['spacer_2_pick_order'].values[0]]
-            target_df = target_df[~target_df['Pick Order'].isin(used_picks)].reset_index(drop=True)
-            # record the guide pair
-            intergenic_targeting_pairs.append(guide_pair)
+                # if we run out of guides, print a warning and break
+                if len(target_df)<2:
+                    print(f'ran out of guides for {target}')
+                    break
 
-            # if we run out of guides, print a warning and break
-            if len(target_df)<2:
-                print(f'ran out of guides for {target}')
-                break
+    elif ko_intergenic_pairing_method == 'random':
+        for target in df_intergenic_guides['Target Gene Symbol'].unique():
+                
+                target_df = df_intergenic_guides[df_intergenic_guides['Target Gene Symbol'] == target].copy().reset_index(drop=True)
+                # select the guide pair, randomly pairing guides within a chromosome
+                intergenic_targeting_pairs.append(
+                    pair_guides_single_target_CRISPick(
+                        target_df, constructs_per_gene=n_intergenic_constructs_per_gene[target]
+                        ))
+    
+    else:
+        raise ValueError(f'ko_intergenic_pairing_method {ko_intergenic_pairing_method} not recognized. Options are "adjacent" and "random"')
+
 
     intergenic_targeting_pairs = pd.concat(intergenic_targeting_pairs, ignore_index=True)
     intergenic_targeting_pairs['category']='INTERGENIC_CONTROL'
