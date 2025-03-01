@@ -2,7 +2,7 @@
 
 ... now even more versatile(!) with CROPseq-multi-v2
 
-### Code for library design and NGS analysis of CROPseq-multi libraries.
+### Code for the design and analysis of CROPseq-multi libraries.
 
 <p align="center">
 <img src="https://github.com/rtwalton/CROPseq-multi/blob/CSMv2/input_files/CSMv2_cartoon.png" alt="CROPseq-multi illustration" width="500"/>
