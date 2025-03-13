@@ -3,6 +3,8 @@ import numpy as np
 import random
 import warnings
 import iteround
+from natsort import natsorted
+import matplotlib.pyplot as plt
 from constants import *
 from utils import *
 
@@ -66,9 +68,12 @@ def filter_guides(
 
 
 def pair_guides_single_target_CRISPick(
-    guide_input_df, constructs_per_gene=3, 
+    guide_input_df, 
+    constructs_per_gene=3, 
     n_genes = 'all',
-    tRNA_req='any', pairing_method = 'pick_sum',
+    tRNA_req='any', 
+    pairing_method = 'pick_sum',
+    return_missing_guides = False,
     ):
     """
     Use CRISPick output to pair two guides targeting the same gene in one construct
@@ -128,6 +133,7 @@ def pair_guides_single_target_CRISPick(
     guide_input_filt =  guide_input_df[guide_input_df['sgRNA Sequence'].apply(check_spacer_1) &\
         guide_input_df['sgRNA Sequence'].apply(check_spacer_2, tRNA_req=tRNA_req)]
     all_guide_pairs = []
+    insufficient_guides = []
     
     for target, target_df in guide_input_filt.groupby('Target Gene ID'):
 
@@ -147,6 +153,8 @@ def pair_guides_single_target_CRISPick(
             # print a warning if we run out of guides for a target
             if len(spacer_candidates)<2 :
                 print(f'ran out of guides for {target}')
+                insufficient_guides.append([target, target_symbol,
+                                             2*constructs_per_gene - 2*len(target_guide_pairs) - len(spacer_candidates)])
                 break
          
             spacer_a = spacer_candidates[0]
@@ -167,12 +175,20 @@ def pair_guides_single_target_CRISPick(
                 target_guide_pairs.append([target, target_symbol, spacer_b, spacer_a, spacer_b_po, spacer_a_po, target_version])
 
         all_guide_pairs += target_guide_pairs
-        
-    return pd.DataFrame(
+    
+    guide_pairs = pd.DataFrame(
         data=all_guide_pairs, 
         columns=['target','target_symbol','spacer_1','spacer_2', 'spacer_1_pick_order', 'spacer_2_pick_order', 'target_version']
     )
+    insufficient_guides = pd.DataFrame(
+        data=insufficient_guides, 
+        columns=['target','target_symbol','n_additional_guides_needed']
+    )
 
+    if return_missing_guides:
+        return guide_pairs, insufficient_guides
+    else:
+        return guide_pairs
 
 def pair_guides_single_target_controls(
     n_OR_genes=0, n_OR_constructs_per_gene=0,
@@ -231,53 +247,83 @@ def pair_guides_single_target_controls(
     )  
     OR_targeting_pairs['category']='OLFACTORY_RECEPTOR'
 
-    # select intergenic controls
-    # especially for CRISPRko, we will take care of how we pair guides
-    df_intergenic_guides = pd.read_table('input_files/CRISPick_intergenic_guides.txt')
-    # distribute selection proportionally across chromosomes
-    n_intergenic_constructs_per_gene = { chr:x for (chr, x) in zip(
-        df_intergenic_guides.value_counts('Target Gene Symbol').index, 
-        [int(i) for i in iteround.saferound(
-            df_intergenic_guides.value_counts('Target Gene Symbol') / len(df_intergenic_guides) * n_intergenic_constructs, 0)
-            ])}
+    # select intergenic controls, taking care how we pair guides
+    # currently this is implemented primarily considering CRISPR-KO design concerns
+    intergenic_targeting_pairs = pair_intergenic_guides(n_intergenic_constructs, ko_intergenic_pairing_method)
+    
+    # select nontargeting controls
+    df_nontargeting_guides = pd.read_table('input_files/CRISPick_nontargeting_guides.txt')
+    non_targeting_pairs = pair_guides_single_target_CRISPick(
+        df_nontargeting_guides, constructs_per_gene=n_nontargeting_constructs)
+    non_targeting_pairs['category']='NONTARGETING_CONTROL'
+    
+    return pd.concat([ OR_targeting_pairs,  non_targeting_pairs, intergenic_targeting_pairs,
+                      ], ignore_index=True).reset_index(drop=True)
 
+
+def pair_intergenic_guides(
+        n_intergenic_constructs,
+        ko_intergenic_pairing_method,
+):
+    """
+    Pair intergenic guides, taking care to sample chromosomes and considering relative positioning of guides.
+    Sample chromosomes approximately according to their size.
+    For ko_intergenic_pairing_method = 'random', randomly pair intergenic guides 
+        (pre-filtered to match activity and specificity of CRISPick Jacquere selections)
+    For ko_intergenic_pairing_method = 'random', pair guides tiling chromosomes, matching activity and 
+    specificity of CRISPick Jacquere selections, with inter-guide distances comparable to gene-targeting pairs.
+    """
+    
     intergenic_targeting_pairs = []
-    rng = np.random.default_rng(seed=0)
 
     if ko_intergenic_pairing_method == 'adjacent':
-        for target in df_intergenic_guides['Target Gene Symbol'].unique():
+
+        # open pre-paired set of intergenic guides
+        # in this file, 'Target Gene ID' is unique to a guide pair, defined by chromosome and coordinates
+        df_intergenic_guides = pd.read_table('input_files/CRISPick_Jacquere_intergenic_guide_pairs.txt')
+        df_intergenic_guides.sort_values(['chr','start'], inplace=True)
+
+        # determine how many guides for each chromosome based by distributing approximately by chromosome size
+        # actually just by total number of control guides but it's reasonably close
+        n_intergenic_constructs_per_gene = { chr:x for (chr, x) in zip(
+            df_intergenic_guides.value_counts('chr').index, 
+            [int(i) for i in iteround.saferound(
+                df_intergenic_guides.value_counts('chr') / len(df_intergenic_guides) * n_intergenic_constructs, 0)
+                ])}
+        
+        # iterate through chromosomes
+        for chr, df in df_intergenic_guides.groupby('chr'):
+            
+            # select re
+            if len(df)< 2*n_intergenic_constructs_per_gene[chr]:
+                indices = range(len(df))
+            else:
+                indices = np.linspace(0, len(df) - 1, n_intergenic_constructs_per_gene[chr], dtype=int)
+
+            regions = df.iloc[indices]['Target Gene ID'].values
+
+            for region in regions:
+                df_region = df[df['Target Gene ID']==region]
+                df_region_pair = pair_guides_single_target_CRISPick(df_region, constructs_per_gene=1)
+                intergenic_targeting_pairs.append(df_region_pair)
+
+            # if we run out of guides, print a warning and break
+            if len(df)< 2*n_intergenic_constructs_per_gene[chr]:
+                print(f'ran out of guides for {chr}')
+                break
     
-            target_df = df_intergenic_guides[df_intergenic_guides['Target Gene Symbol'] == target].copy().reset_index(drop=True)
-            # now we can determine guide pairing prioritization
-            # we will prioritize guides closer together
-            for n in range(n_intergenic_constructs_per_gene[target]):
-                
-                # select a random guide
-                selected_guide = target_df.iloc[rng.choice(len(target_df))]
-
-                # rank "Pick Order" by distance from the selected guide
-                selected_position = selected_guide['cutsite']
-                target_df['distance_from_selected'] = target_df['cutsite'].apply(lambda x: abs(x - selected_position))
-                target_df.sort_values('distance_from_selected', ascending=True, inplace=True)
-                target_df.reset_index(drop=True, inplace=True)
-                target_df['Pick Order'] = target_df.index + 1
-
-                # select the guide pair, prioritizing guides closer together
-                guide_pair = pair_guides_single_target_CRISPick(
-                    target_df, constructs_per_gene=1, pairing_method='descending')
-
-                # remove guides that were selected for this construct
-                used_picks = [guide_pair['spacer_1_pick_order'].values[0]] + [guide_pair['spacer_2_pick_order'].values[0]]
-                target_df = target_df[~target_df['Pick Order'].isin(used_picks)].reset_index(drop=True)
-                # record the guide pair
-                intergenic_targeting_pairs.append(guide_pair)
-
-                # if we run out of guides, print a warning and break
-                if len(target_df)<2:
-                    print(f'ran out of guides for {target}')
-                    break
-
     elif ko_intergenic_pairing_method == 'random':
+
+        # open unpaired set of intergenic guides
+        df_intergenic_guides = pd.read_table('input_files/CRISPick_Jacquere_intergenic_guides.txt')
+
+        # distribute selection proportionally across chromosomes
+        n_intergenic_constructs_per_gene = { chr:x for (chr, x) in zip(
+            df_intergenic_guides.value_counts('Target Gene Symbol').index, 
+            [int(i) for i in iteround.saferound(
+                df_intergenic_guides.value_counts('Target Gene Symbol') / len(df_intergenic_guides) * n_intergenic_constructs, 0)
+                ])}
+        
         for target in df_intergenic_guides['Target Gene Symbol'].unique():
                 
                 target_df = df_intergenic_guides[df_intergenic_guides['Target Gene Symbol'] == target].copy().reset_index(drop=True)
@@ -290,18 +336,13 @@ def pair_guides_single_target_controls(
     else:
         raise ValueError(f'ko_intergenic_pairing_method {ko_intergenic_pairing_method} not recognized. Options are "adjacent" and "random"')
 
-
     intergenic_targeting_pairs = pd.concat(intergenic_targeting_pairs, ignore_index=True)
+    intergenic_targeting_pairs['target_version'] = intergenic_targeting_pairs.groupby('target_symbol').cumcount()+1
     intergenic_targeting_pairs['category']='INTERGENIC_CONTROL'
-    
-    # select nontargeting controls
-    df_nontargeting_guides = pd.read_table('input_files/CRISPick_nontargeting_guides.txt')
-    non_targeting_pairs = pair_guides_single_target_CRISPick(
-        df_nontargeting_guides, constructs_per_gene=n_nontargeting_constructs)
-    non_targeting_pairs['category']='NONTARGETING_CONTROL'
-    
-    return pd.concat([ OR_targeting_pairs,  non_targeting_pairs, intergenic_targeting_pairs,
-                      ], ignore_index=True).reset_index(drop=True)
+
+    return intergenic_targeting_pairs
+
+
 
 
 def pair_guides_target_and_control_CRISPick(
@@ -352,20 +393,22 @@ def pair_guides_target_and_control_CRISPick(
     rng = np.random.default_rng(seed=rand_seed)
     
     guide_pairs_df = pd.DataFrame()
+    guides_df = guide_input_df.copy()
+    controls_df = control_guides_df.copy()
 
     # check spacer compatibility in each position
-    guide_input_df['spacer1_check'] = guide_input_df['sgRNA Sequence'].apply(check_spacer_1)
-    guide_input_df['spacer2_check'] = guide_input_df['sgRNA Sequence'].apply(check_spacer_2, tRNA_req=tRNA_req)
-    control_guides_df['spacer1_check']= control_guides_df['sgRNA Sequence'].apply(check_spacer_1)
-    control_guides_df['spacer2_check']= control_guides_df['sgRNA Sequence'].apply(check_spacer_2, tRNA_req=tRNA_req)    
+    guides_df['spacer1_check'] = guides_df['sgRNA Sequence'].apply(check_spacer_1)
+    guides_df['spacer2_check'] = guides_df['sgRNA Sequence'].apply(check_spacer_2, tRNA_req=tRNA_req)
+    controls_df['spacer1_check']= controls_df['sgRNA Sequence'].apply(check_spacer_1)
+    controls_df['spacer2_check']= controls_df['sgRNA Sequence'].apply(check_spacer_2, tRNA_req=tRNA_req)    
 
     # require that spacers work in all positions since we're not deciding position yet
-    guide_input_df = guide_input_df[guide_input_df['spacer1_check'] & guide_input_df['spacer2_check']]
-    control_guides_df = control_guides_df[control_guides_df['spacer1_check'] & control_guides_df['spacer2_check']]
+    guides_df = guides_df[guides_df['spacer1_check'] & guides_df['spacer2_check']]
+    controls_df = controls_df[controls_df['spacer1_check'] & controls_df['spacer2_check']]
 
-    control_candidates = list(control_guides_df['sgRNA Sequence'].values)
+    control_candidates = list(controls_df['sgRNA Sequence'].values)
 
-    for target, target_gene_df in guide_input_df.groupby('Target Gene Symbol'):
+    for target, target_gene_df in guides_df.groupby('Target Gene ID'):
         target_gene_df.sort_values('Pick Order', inplace=True)
 
         gene_targeting_guides = list(target_gene_df['sgRNA Sequence'].values)[:constructs_per_gene]
@@ -401,6 +444,11 @@ def pair_guides_target_and_control_CRISPick(
 
     guide_pairs_df['target_version'] = guide_pairs_df.index.astype(int) + 1
     guide_pairs_df.reset_index(inplace=True, drop=True)
+
+    if set(guide_input_df['Target Gene ID']) != set(guide_pairs_df['target']):
+        print('failed to design any constructs for gene(s): %s'% ' '.join(
+            set(guide_input_df['Target Gene ID']) - set(guide_pairs_df['target'])
+        ))
 
     return guide_pairs_df    
 
@@ -590,3 +638,70 @@ def select_single_guides_CRISPick(
     selected_guides['target_version'] = selected_guides.groupby('target').cumcount() + 1
 
     return selected_guides
+
+
+def plot_genome_lengths(df_input):
+
+    # Create figure and axis
+
+    plt.figure(figsize=(15, 5))
+    ax = plt.gca()
+
+    current_position = 0
+    chromosome_boundaries = []
+    chromosome_centers = []
+
+    df = df_input.copy()
+    # expecting this format for 'target': INTERGENIC_CONTROL_chr<chr>_<start>-<end>
+    # e.g. INTERGENIC_CONTROL_chr12_18874105-18878798
+    df['chr'] = df['target'].str.split("_").str.get(2)
+    df['start'] =  df['target'].str.split("_").str.get(3).str.split('-').str.get(0).astype(int)
+    df['end'] =  df['target'].str.split("_").str.get(3).str.split('-').str.get(1).astype(int)
+
+    # Plot each chromosome's data
+    for chrom in natsorted(df['chr'].unique()):
+
+        chrom_data = df[df['chr'] == chrom]
+        
+        # Calculate center position of each region
+        centers = (chrom_data['start'] + chrom_data['end']) / 2
+        
+        # Calculate lengths
+        lengths = (chrom_data['end'] - chrom_data['start'])
+        
+        # Shift centers by current_position
+        shifted_centers = centers - centers.min() + current_position
+        
+        # Plot region centers vs lengths
+        ax.scatter(shifted_centers, lengths, alpha=0.5, s=4, label=chrom)
+        
+        # Store chromosome boundary and center for labeling
+        chromosome_boundaries.append(current_position)
+        chromosome_centers.append(current_position + (centers.max() - centers.min())/2)
+        
+        # Update current_position for next chromosome
+        current_position = shifted_centers.max() + 1e6  # Add 1Mb gap between chromosomes
+
+    # Customize plot
+    ax.set_yscale('log')
+    ax.set_xlabel('Relative Position')
+    ax.set_ylabel('Region Length (bp)')
+    ax.set_title('Region Lengths Across Chromosomes')
+
+    # Remove top and right spines
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+    # Add grid
+    ax.grid(True, linestyle='--', alpha=0.25)
+
+    # Add chromosome labels at the center of each chromosome's data
+    ax.set_xticks(chromosome_centers)
+    ax.set_xticklabels(natsorted(df['chr'].unique()), rotation=45)
+
+    # Add vertical lines between chromosomes
+    for boundary in chromosome_boundaries[1:]:
+        ax.axvline(x=boundary - 5e5, color='gray', linestyle='--', alpha=0.3)
+
+    plt.tight_layout()
+
