@@ -105,11 +105,11 @@ def pair_guides_single_target_CRISPick(
 
     Returns: pd.DataFrame containing guide pairs
     """
+    rng = np.random.default_rng(seed=0)
 
     # if requested, subset n_genes at random, usually to design a set of controls
     if n_genes != 'all':
         if isinstance(n_genes, int):
-            rng = np.random.default_rng(seed=0)
             if n_genes > len(guide_input_df['Target Gene ID'].unique()):
                 print('n_genes is greater than the number of unique genes provided. defaulting to n_genes="all"')
             else:

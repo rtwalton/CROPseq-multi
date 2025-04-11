@@ -21,11 +21,15 @@ template_1_step_oligo_single_guide = "{dialout_fwd}{CSM_BsmBI_left}{spacer}{CSM_
 read_1_primer_seq = "GTTCGATTCCCGGCCAATGCA"
 read_2_primer_seq = "GCCTTATTTCAACTTGCTATGCTGTT"
 
-# CROPseq-multi two-step cloning (not currently fully implemented or supported)
 
-BbsI_filler_tRNA_A = "GACTGCNNGTCTTCNNNNNNNNNNGAAGACNNTCCA"
-BbsI_filler_tRNA_P = "GACTNNGTCTTCNNNNNNNNNNGAAGACNNGAGCCC"
-BbsI_filler_tRNA_Q = "GACTGNNGTCTTCNNNNNNNNNNGAAGACNNAACCT"
-BbsI_fillers = {'tRNA_A':BbsI_filler_tRNA_A, 'tRNA_P':BbsI_filler_tRNA_P, 'tRNA_Q':BbsI_filler_tRNA_Q}
+# for sc alignment
+U6_tRNA_G_seq = "GAGGGCCTATTTCCCATGATTCCTTCATATTTGCATATACGATACAAGGCTGTTAGAGAGATAATTAGAATTAATTTGACTGTAAACACAAAGATATTAGTACAAAATACGTGACGTAGAAAGTAATAATTTCTTGGGTAGTTTGCAGTTTTAAAATTATGTTTTAAAATGGACTATCATATGCTTACCGTAACTTGAAAGTATTTCGATTTCTTGGCTTTATATATCTTGTGGAAAGGACGAAACACCGGCATTGGTGGTTCAGTGGTAGAATTCTCGCCTGCCACGCGGGAGGCCCGGGTTCGATTCCCGGCCAATGCA"
+template_U6_tRNA_G_dual_guide_ref = "{upstream_seq}{spacer_1}{stem_1}{iBAR_1}{tracr_1}{tRNA_leader}{tRNA}{spacer_2}{stem_2}{iBAR_2}{tracr_2}TTTTTT"
 
-template_2_step_oligo = "{dialout_fwd}{CSM_BsmBI_left}{spacer_1}{CSM_stem_1}{iBAR_1}{BbsI_filler}{spacer_2}{CSM_stem_2}{iBAR_2}{CSM_BsmBI_right}{dialout_rev}"
+##### CROPseq-multi two-step cloning (not currently fully implemented or supported)
+# BbsI_filler_tRNA_A = "GACTGCNNGTCTTCNNNNNNNNNNGAAGACNNTCCA"
+# BbsI_filler_tRNA_P = "GACTNNGTCTTCNNNNNNNNNNGAAGACNNGAGCCC"
+# BbsI_filler_tRNA_Q = "GACTGNNGTCTTCNNNNNNNNNNGAAGACNNAACCT"
+# BbsI_fillers = {'tRNA_A':BbsI_filler_tRNA_A, 'tRNA_P':BbsI_filler_tRNA_P, 'tRNA_Q':BbsI_filler_tRNA_Q}
+
+# template_2_step_oligo = "{dialout_fwd}{CSM_BsmBI_left}{spacer_1}{CSM_stem_1}{iBAR_1}{BbsI_filler}{spacer_2}{CSM_stem_2}{iBAR_2}{CSM_BsmBI_right}{dialout_rev}"
