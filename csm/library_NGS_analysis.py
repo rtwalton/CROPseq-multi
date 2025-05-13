@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
+import warnings
 from Bio.Seq import Seq
 import gzip
 from tqdm import tqdm
@@ -353,6 +355,11 @@ def count_constructs(
 
     for index, row in tqdm(lib_info_df.iterrows(), total=lib_info_df.shape[0]):
         
+        # generate unique construct identifiers for library design if construct design is not passed as argument
+        # and instead is specified in the library info file
+        if lib_design_input_df is None:
+            lib_design_df = generate_unique_construct_identifiers(pd.read_csv(row['design']), use_tRNA, iBAR2_UMI)
+
         if 'dialout' in lib_info_df.columns:
             lib_design_index = {
                 k:v for (v,k) in lib_design_df[ lib_design_df['dialout'] == row['dialout'] 
@@ -381,7 +388,7 @@ def count_constructs(
                             custom=custom_mapping_columns,
                             )
         else:
-            warnings.warn("'method' not recognized - will attempt to count construct by method 'align'")
+            warnings.warn("'method' not recognized - will attempt to count constructs by method 'align'")
             df_barcodes = extract_barcodes_from_fastq_pair_align(fastq_pair, 
                 use_tRNA=use_tRNA, iBAR2_UMI=iBAR2_UMI, 
                 single_fastq = single_fastq,
@@ -436,6 +443,7 @@ def count_constructs(
         df_summary.loc[row['sample_ID'], 'timepoint'] = row['timepoint']
         df_summary.loc[row['sample_ID'], 'replicate'] = row['replicate']
         df_summary.loc[row['sample_ID'], 'tot_reads'] = len(df_barcodes)
+        df_summary.loc[row['sample_ID'], 'NGS_coverage'] = len(df_barcodes)/len(lib_design_df)
         df_barcodes_mapped = df_barcodes[df_barcodes['design_index'].notna()]
 
         df_summary.loc[row['sample_ID'], 'spacer_1_map'] = df_barcodes['spacer_1_map'].sum()/len(df_barcodes)
@@ -486,9 +494,10 @@ def count_constructs(
         df_summary.loc[row['sample_ID'], 'dropout_count'] = (sublib_design_counts_df[row['sample_ID']]==0).sum()
         df_summary.loc[row['sample_ID'], 'gini_coefficient'] =  gini(sublib_design_counts_df[row['sample_ID']].values)
         df_summary.loc[row['sample_ID'], 'ratio_90_10'] = ratio_9010(sublib_design_counts_df[row['sample_ID']].values)
-
+    
+    df_summary.index.rename('sample_ID', inplace=True)
     if return_raw_barcodes:
-        return lib_design_counts_df, df_summary, df_total
+        return design_count_dict, df_summary, df_total
     else:
         return lib_design_counts_df, df_summary
 
