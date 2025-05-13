@@ -5,176 +5,177 @@ from Bio.Seq import Seq
 import gzip
 from tqdm import tqdm
 import constants
-
-
-tRNA_seq_dict = {
-	'GGACGAGCCC':'tRNA_P',
-	'GGCCAATGCA':'tRNA_G',
-	'GGTGGAACCT':'tRNA_Q',
-	'AGTACCTCCA':'tRNA_A',
-}
+import warnings
 
 def lorenz_curve(X, library_name='library'):
-	X_sorted = X.copy()
-	X_sorted.sort()
-	X_lorenz = X_sorted.cumsum() / X_sorted.sum()
-	X_lorenz = np.insert(X_lorenz, 0, 0) 
-	X_lorenz[0], X_lorenz[-1]
-	fig, ax = plt.subplots(figsize=[3,3])
-	## scatter plot of Lorenz curve
-	ax.plot(np.arange(X_lorenz.size)/(X_lorenz.size-1), X_lorenz, 
-			   color='dodgerblue', label=library_name)
-	## line plot of equality
-	ax.plot([0,1], [0,1], color='k', label='line of equality')
-	plt.xlabel('fraction of reads')
-	plt.ylabel('fraction of elements')
-	plt.legend()
-	
+    X_sorted = X.copy()
+    X_sorted.sort()
+    X_lorenz = X_sorted.cumsum() / X_sorted.sum()
+    X_lorenz = np.insert(X_lorenz, 0, 0) 
+    X_lorenz[0], X_lorenz[-1]
+    fig, ax = plt.subplots(figsize=[3,3])
+    ## scatter plot of Lorenz curve
+    ax.plot(np.arange(X_lorenz.size)/(X_lorenz.size-1), X_lorenz, 
+               color='dodgerblue', label=library_name)
+    ## line plot of equality
+    ax.plot([0,1], [0,1], color='k', label='line of equality')
+    plt.xlabel('fraction of reads')
+    plt.ylabel('fraction of elements')
+    plt.legend()
+    
 def gini(arr):
-	## first sort
-	sorted_arr = arr.copy()
-	sorted_arr.sort()
-	n = arr.size
-	coef_ = 2. / n
-	const_ = (n + 1.) / n
-	weighted_sum = sum([(i+1)*yi for i, yi in enumerate(sorted_arr)])
-	return coef_*weighted_sum/(sorted_arr.sum()) - const_
+    ## first sort
+    sorted_arr = arr.copy()
+    sorted_arr.sort()
+    n = arr.size
+    coef_ = 2. / n
+    const_ = (n + 1.) / n
+    weighted_sum = sum([(i+1)*yi for i, yi in enumerate(sorted_arr)])
+    return coef_*weighted_sum/(sorted_arr.sum()) - const_
 
 def ratio_9010(arr, percentile=10):
-	sorted_arr = arr.copy()
-	sorted_arr.sort()
-	n_percentile = int(arr.size/percentile)
-	return sorted_arr[-n_percentile]/sorted_arr[n_percentile]
+    sorted_arr = arr.copy()
+    sorted_arr.sort()
+    n_percentile = int(arr.size/percentile)
+    return sorted_arr[-n_percentile]/sorted_arr[n_percentile]
 
 
-def generate_unique_construct_identifiers(df, use_tRNA=False, iBAR2_UMI=False):
-	"""
-	return df with added unique construct identifier (combination of spacers, iBARs, tRNA)
-	"""
-	if use_tRNA:
-		if iBAR2_UMI:
-			df['unique_barcode_combo'] =\
-				df['spacer_1'] + '-' + \
-				df['iBAR_1'] + '-' + \
-				df['tRNA'] + '-' + \
-				df['spacer_2']
-		else:
-			df['unique_barcode_combo'] =\
-				df['spacer_1'] + '-' + \
-				df['iBAR_1'] + '-' + \
-				df['tRNA'] + '-' + \
-				df['spacer_2'] + '-' +\
-				df['iBAR_2']
-	else:
-		if iBAR2_UMI:
-			df['unique_barcode_combo'] =\
-				df['spacer_1'] + '-' + \
-				df['iBAR_1'] + '-' + \
-				df['spacer_2']
-		else:
-			df['unique_barcode_combo'] =\
-				df['spacer_1'] + '-' + \
-				df['iBAR_1'] + '-' + \
-				df['spacer_2']+ '-' +\
-				df['iBAR_2']
+def generate_unique_construct_identifiers(df, use_tRNA=False, iBAR2_UMI=False, custom=None):
+    """
+    return df with added unique construct identifier (combination of spacers, iBARs, tRNA)
+    """
+    # if custom list of columns is provided, use that to generate unique identifier
+    # this overrides the other parameters
+    if custom is not None:
+      df['unique_barcode_combo'] = df[custom].agg('-'.join, axis=1)
+      return df
+    
+    if use_tRNA:
+        if iBAR2_UMI:
+            df['unique_barcode_combo'] =\
+                df['spacer_1'] + '-' + \
+                df['iBAR_1'] + '-' + \
+                df['tRNA'] + '-' + \
+                df['spacer_2']
+        else:
+            df['unique_barcode_combo'] =\
+                df['spacer_1'] + '-' + \
+                df['iBAR_1'] + '-' + \
+                df['tRNA'] + '-' + \
+                df['spacer_2'] + '-' +\
+                df['iBAR_2']
+    else:
+        if iBAR2_UMI:
+            df['unique_barcode_combo'] =\
+                df['spacer_1'] + '-' + \
+                df['iBAR_1'] + '-' + \
+                df['spacer_2']
+        else:
+            df['unique_barcode_combo'] =\
+                df['spacer_1'] + '-' + \
+                df['iBAR_1'] + '-' + \
+                df['spacer_2']+ '-' +\
+                df['iBAR_2']
 
-	return df
+    return df
 
 def extract_barcodes_from_fastq_pair(
-	fastq_pair, 
-	use_tRNA=False, 
-	iBAR2_UMI=False,
-	custom_read_primers = True,
-	single_fastq = False,
-	max_reads=1e7):
-	"""
-	parse pair of read 1 and read 2 fastq files and extract sequences
-	"""
+    fastq_pair, 
+    use_tRNA=False, 
+    iBAR2_UMI=False,
+    custom_read_primers = True,
+    single_fastq = False,
+    max_reads=1e7,
+    **kwargs
+    ):
+    """
+    parse pair of read 1 and read 2 fastq files and extract sequences
+    """
 
-	if custom_read_primers:
-		read_1_ref_pos = 0
-		read_2_ref_pos = 0
-	else:
-		read_1_ref_pos = len(constants.read_1_primer_seq)
-		read_2_ref_pos = len(constants.read_2_primer_seq)
+    if custom_read_primers:
+        read_1_ref_pos = 0
+        read_2_ref_pos = 0
+    else:
+        read_1_ref_pos = len(constants.read_1_primer_seq)
+        read_2_ref_pos = len(constants.read_2_primer_seq)
 
-	# first sgRNA spacer and iBAR in read 1
-	spacer1_coords = (read_1_ref_pos,read_1_ref_pos+20)
-	iBar1_coords = (read_1_ref_pos+39,read_1_ref_pos+51)
+    # first sgRNA spacer and iBAR in read 1
+    spacer1_coords = (read_1_ref_pos,read_1_ref_pos+20)
+    iBar1_coords = (read_1_ref_pos+39,read_1_ref_pos+51)
 
-	# second sgRNA spacer and iBAR in read 2
-	spacer2_coords = (read_2_ref_pos+31,read_2_ref_pos+51)
-	iBar2_coords = (read_2_ref_pos,read_2_ref_pos+12)
-	# middle tRNA in read 2
-	tRNA_2_coords = (read_2_ref_pos+51,read_2_ref_pos+51+10)
+    # second sgRNA spacer and iBAR in read 2
+    spacer2_coords = (read_2_ref_pos+31,read_2_ref_pos+51)
+    iBar2_coords = (read_2_ref_pos,read_2_ref_pos+12)
+    # middle tRNA in read 2, use 4 nt prefix to map
+    tRNA_2_coords = (read_2_ref_pos+51,read_2_ref_pos+51+4)
 
-	infileR1 = gzip.open(fastq_pair[0], 'rt')
-	if single_fastq:
-		infileR2 = gzip.open(fastq_pair[0], 'rt')
-	else:
-		infileR2 = gzip.open(fastq_pair[1], 'rt')
+    infileR1 = gzip.open(fastq_pair[0], 'rt')
+    if single_fastq:
+        infileR2 = gzip.open(fastq_pair[0], 'rt')
+    else:
+        infileR2 = gzip.open(fastq_pair[1], 'rt')
 
-	fastq_data = []
-	total_reads = 0
-	# this is slow so probably don't want to run this on tens of million of reads
+    fastq_data = []
+    total_reads = 0
+    # this is slow so probably don't want to run this on tens of million of reads
 
-	while infileR1.readline() and infileR2.readline():
+    while infileR1.readline() and infileR2.readline():
 
-		if not single_fastq:
-			# paired reads are corresponding rows in separate files
-			read_sequenceR1 = infileR1.readline().strip()
-			infileR1.readline()
-			infileR1.readline()
-			read_sequenceR2 = infileR2.readline().strip()
-			infileR2.readline()
-			infileR2.readline()
-		else:
-			# paried reads are alternating entries in single fastq
-			read_sequence_1 = infileR1.readline().strip()
-			infileR1.readline()
-			infileR1.readline()
-			infileR1.readline()
-			# paired read 1 is subsequent entry
-			read_sequence_2 = infileR1.readline().strip()
-			infileR1.readline()
-			infileR1.readline()
-			# use first 8 nt of read to assign to read 1 or read 2
-			if (read_sequence_1[:8] == constants.read_1_primer_seq[:8]) or\
-				(read_sequence_2[:8] == constants.read_2_primer_seq[:8]):
-				read_sequenceR1 = read_sequence_1
-				read_sequenceR2 = read_sequence_2
-			elif (read_sequence_2[:8] == constants.read_1_primer_seq[:8]) or\
-				 (read_sequence_1[:8] == constants.read_2_primer_seq[:8]):
-				read_sequenceR1 = read_sequence_2
-				read_sequenceR2 = read_sequence_1
-			else: # for now, just defaulting to this option so that reads will be counted as 'not mapped'
-				read_sequenceR1 = read_sequence_1
-				read_sequenceR2 = read_sequence_2
+        if not single_fastq:
+            # paired reads are corresponding rows in separate files
+            read_sequenceR1 = infileR1.readline().strip()
+            infileR1.readline()
+            infileR1.readline()
+            read_sequenceR2 = infileR2.readline().strip()
+            infileR2.readline()
+            infileR2.readline()
+        else:
+            # paried reads are alternating entries in single fastq
+            read_sequence_1 = infileR1.readline().strip()
+            infileR1.readline()
+            infileR1.readline()
+            infileR1.readline()
+            # paired read 1 is subsequent entry
+            read_sequence_2 = infileR1.readline().strip()
+            infileR1.readline()
+            infileR1.readline()
+            # use first 8 nt of read to assign to read 1 or read 2
+            if (read_sequence_1[:8] == constants.read_1_primer_seq[:8]) or\
+                (read_sequence_2[:8] == constants.read_2_primer_seq[:8]):
+                read_sequenceR1 = read_sequence_1
+                read_sequenceR2 = read_sequence_2
+            elif (read_sequence_2[:8] == constants.read_1_primer_seq[:8]) or\
+                 (read_sequence_1[:8] == constants.read_2_primer_seq[:8]):
+                read_sequenceR1 = read_sequence_2
+                read_sequenceR2 = read_sequence_1
+            else: # for now, just defaulting to this option so that reads will be counted as 'not mapped'
+                read_sequenceR1 = read_sequence_1
+                read_sequenceR2 = read_sequence_2
 
-		sg1_seq = read_sequenceR1[spacer1_coords[0]:spacer1_coords[1]]
-		# iBARs in SBS orientation (reverse complement of sgRNA orientation)
-		iBar1_seq = str(Seq(read_sequenceR1[iBar1_coords[0]:iBar1_coords[1]]).reverse_complement())
+        sg1_seq = read_sequenceR1[spacer1_coords[0]:spacer1_coords[1]]
+        # iBARs in SBS orientation (reverse complement of sgRNA orientation)
+        iBar1_seq = str(Seq(read_sequenceR1[iBar1_coords[0]:iBar1_coords[1]]).reverse_complement())
 
-		sg2_seq = str(Seq(read_sequenceR2[spacer2_coords[0]:spacer2_coords[1]]).reverse_complement())
-		# iBARs in SBS orientation (reverse complement of sgRNA orientation)
-		iBar2_seq = read_sequenceR2[iBar2_coords[0]:iBar2_coords[1]]
-		
-		tRNA_2_seq = str(Seq(read_sequenceR2[tRNA_2_coords[0]:tRNA_2_coords[1]]).reverse_complement())
+        sg2_seq = str(Seq(read_sequenceR2[spacer2_coords[0]:spacer2_coords[1]]).reverse_complement())
+        # iBARs in SBS orientation (reverse complement of sgRNA orientation)
+        iBar2_seq = read_sequenceR2[iBar2_coords[0]:iBar2_coords[1]]
+        
+        tRNA_2_seq = str(Seq(read_sequenceR2[tRNA_2_coords[0]:tRNA_2_coords[1]]).reverse_complement())
 
-		fastq_data.append([sg1_seq, iBar1_seq, sg2_seq, iBar2_seq, tRNA_2_seq])
-		total_reads += 1
-		if total_reads >= max_reads:
-			break
+        fastq_data.append([sg1_seq, iBar1_seq, sg2_seq, iBar2_seq, tRNA_2_seq])
+        total_reads += 1
+        if total_reads >= max_reads:
+            break
 
-	df_barcodes = pd.DataFrame(
-		columns =  ['spacer_1', 'iBAR_1', 'spacer_2', 'iBAR_2', 'tRNA_10'], 
-		data=fastq_data)
+    df_barcodes = pd.DataFrame(
+        columns =  ['spacer_1', 'iBAR_1', 'spacer_2', 'iBAR_2', 'tRNA_short'], 
+        data=fastq_data)
 
-	df_barcodes['tRNA']= df_barcodes['tRNA_10'].map(tRNA_seq_dict)
+    df_barcodes['tRNA']= df_barcodes['tRNA_short'].map(constants.tRNA_map_by_prefix)
 
-	df_barcodes = generate_unique_construct_identifiers(df_barcodes, use_tRNA, iBAR2_UMI)
+    df_barcodes = generate_unique_construct_identifiers(df_barcodes, use_tRNA, iBAR2_UMI, **kwargs)
 
-	return df_barcodes
+    return df_barcodes
 
 def extract_barcodes_from_fastq_pair_align(
     fastq_pair, 
@@ -183,7 +184,9 @@ def extract_barcodes_from_fastq_pair_align(
     single_fastq = False,
     spacer_len = 20,
     iBAR_len = 12,
-    max_reads=1e7):
+    max_reads=1e7,
+    **kwargs
+    ):
     """
     parse pair of read 1 and read 2 fastq files and extract sequences
     """
@@ -241,8 +244,8 @@ def extract_barcodes_from_fastq_pair_align(
         # second sgRNA spacer and iBAR in read 2
         spacer2_coords = (read_2_ref_pos+len(constants.CSM_stem_2), read_2_ref_pos+len(constants.CSM_stem_2)+spacer_len)
         iBar2_coords = (read_2_ref_pos-iBAR_len, read_2_ref_pos)
-        # middle tRNA in read 2
-        tRNA_2_coords = (spacer2_coords[1], spacer2_coords[1]+10) # use 10 nt for identification
+        # middle tRNA in read 2, use 4 nt prefix to map
+        tRNA_2_coords = (spacer2_coords[1], spacer2_coords[1]+4)
 
         def extract_seq(read, cooridnates):
             try:
@@ -262,12 +265,12 @@ def extract_barcodes_from_fastq_pair_align(
             break
 
     df_barcodes = pd.DataFrame(
-        columns =  ['spacer_1', 'iBAR_1', 'spacer_2', 'iBAR_2', 'tRNA_10'], 
+        columns =  ['spacer_1', 'iBAR_1', 'spacer_2', 'iBAR_2', 'tRNA_short'], 
         data=fastq_data)
 
-    df_barcodes['tRNA']= df_barcodes['tRNA_10'].map(tRNA_seq_dict)
+    df_barcodes['tRNA']= df_barcodes['tRNA_short'].map(constants.tRNA_map_by_prefix)
 
-    df_barcodes = generate_unique_construct_identifiers(df_barcodes, use_tRNA, iBAR2_UMI)
+    df_barcodes = generate_unique_construct_identifiers(df_barcodes, use_tRNA, iBAR2_UMI, **kwargs)
 
     return df_barcodes
 
@@ -279,10 +282,71 @@ def count_constructs(
     custom_read_primers = True,
     single_fastq = False,
     return_raw_barcodes=False,
-    method = 'position', # or 'align' - either input fixed positions or try to align sequences
-    max_reads=1e7):
+    method = 'align',
+    max_reads=1e7,
+    custom_mapping_columns=None,
+    ):
     
-    lib_design_df = generate_unique_construct_identifiers(lib_design_input_df, use_tRNA, iBAR2_UMI)
+    """
+    Count constructs from NGS data based on library design and sample information.
+    This function processes NGS data to count occurrences of designed constructs, mapping barcodes
+    and calculating quality metrics.
+    Parameters
+    ----------
+    lib_info_df : pandas.DataFrame
+        DataFrame containing sample information including fastq file paths and sample metadata
+    lib_design_input_df : pandas.DataFrame 
+        DataFrame containing the library design with barcode sequences
+    use_tRNA : bool, optional (default=False)
+        Whether or not to use tRNA sequence as a mapping requirement. 
+    iBAR2_UMI : bool, optional (default=False)
+        Whether or not iBAR2 is used as UMI, rather than encoding the construct ID.
+        If iBAR2_UMI = True, iBAR2 will not be used for mapping and instead, the mean
+        number of unique iBAR2 members per construct will be returned a a proxy for
+        UMI complexity.
+    custom_read_primers : bool, optional (default=True)
+        Whether or not custom read primers were used for NGS (can influence amplicon alignment)
+    single_fastq : bool, optional (default=False)
+        For fastq files that have merged read 1 and read 2 on alternating lines, rather than
+        read 1 and read 2 in separate files.
+    return_raw_barcodes : bool, optional (default=False)
+        Whether to return raw barcode data in addition to counts. Mostly for troubleshooting.
+    method : str, optional (default='align')
+        Method for extracting barcodes - either by aboslute amplicon 'position' or 'align' against
+        a constant region of the sgRNA.
+    max_reads : int, optional (default=1e7)
+        Maximum number of reads to process. This only exists because the code is slow and 
+        1e7 reads is sufficient for most libraries.
+    custom_mapping_columns : list, optional (default=None)
+        List of columns to use for mapping barcodes. Must uniquely identify constructs.
+    Returns
+    -------
+    tuple
+        If return_raw_barcodes=False:
+            - lib_design_counts_df : pandas.DataFrame
+                Library design with counts for each sample
+            - df_summary : pandas.DataFrame 
+                Summary statistics for each sample
+        If return_raw_barcodes=True:
+            - lib_design_counts_df : pandas.DataFrame
+                Library design with counts for each sample
+            - df_summary : pandas.DataFrame
+                Summary statistics for each sample
+            - df_total : pandas.DataFrame
+                Raw barcode data for all samples
+    Notes
+    -----
+    Summary statistics include:
+    - Mapping rates for each barcode element
+    - Total reads and mapped constructs
+    - Fraction of reads mapped and recombined
+    - Dropout counts and distribution metrics (Gini coefficient, 90/10 ratio)
+    """
+    
+    lib_design_df = generate_unique_construct_identifiers(
+        lib_design_input_df, use_tRNA, iBAR2_UMI,
+        custom=custom_mapping_columns,
+    )
 
     df_total = pd.DataFrame()
     df_summary = pd.DataFrame()
@@ -306,18 +370,24 @@ def count_constructs(
                 use_tRNA=use_tRNA, iBAR2_UMI=iBAR2_UMI, 
                 custom_read_primers = custom_read_primers,
                 single_fastq = single_fastq,
-                max_reads=max_reads)
+                max_reads=max_reads,
+                custom=custom_mapping_columns,
+                )
         elif method == 'align':
             df_barcodes = extract_barcodes_from_fastq_pair_align(fastq_pair, 
                             use_tRNA=use_tRNA, iBAR2_UMI=iBAR2_UMI, 
                             single_fastq = single_fastq,
-                            max_reads=max_reads)
+                            max_reads=max_reads,
+                            custom=custom_mapping_columns,
+                            )
         else:
             warnings.warn("'method' not recognized - will attempt to count construct by method 'align'")
             df_barcodes = extract_barcodes_from_fastq_pair_align(fastq_pair, 
                 use_tRNA=use_tRNA, iBAR2_UMI=iBAR2_UMI, 
                 single_fastq = single_fastq,
-                max_reads=max_reads)
+                max_reads=max_reads,
+                custom=custom_mapping_columns,
+                )
         
         # map individual elements
         df_barcodes['spacer_1_map'] = df_barcodes['spacer_1'].isin(lib_design_df['spacer_1'])
@@ -401,7 +471,11 @@ def count_constructs(
                     df_barcodes['spacer_1_map'] & df_barcodes['iBAR_1_map'] &\
                     df_barcodes['spacer_2_map'] & df_barcodes['iBAR_2_map']
                     ).sum()
-        
+                
+        if custom_mapping_columns is not None:
+                mapping_columns = [c+'_map' for c in custom_mapping_columns]
+                df_summary.loc[row['sample_ID'], 'all_elements_mapped'] = df_barcodes[mapping_columns].all(axis=1).sum()
+
         df_summary.loc[row['sample_ID'], 'mapped_constructs'] = len(df_barcodes_mapped)
         # frequencies of mapping and recombination
         df_summary.loc[row['sample_ID'], 'fraction_mapped'] = df_summary.loc[row['sample_ID'], 'mapped_constructs']/\

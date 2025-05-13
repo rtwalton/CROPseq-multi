@@ -249,7 +249,10 @@ def pair_guides_single_target_controls(
 
     # select intergenic controls, taking care how we pair guides
     # currently this is implemented primarily considering CRISPR-KO design concerns
-    intergenic_targeting_pairs = pair_intergenic_guides(n_intergenic_constructs, ko_intergenic_pairing_method)
+    if n_intergenic_constructs != 0:
+        intergenic_targeting_pairs = pair_intergenic_guides(n_intergenic_constructs, ko_intergenic_pairing_method)
+    else:
+        intergenic_targeting_pairs = pd.DataFrame()
     
     # select nontargeting controls
     df_nontargeting_guides = pd.read_table('input_files/CRISPick_nontargeting_guides.txt')

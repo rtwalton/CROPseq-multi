@@ -1,4 +1,4 @@
-name: CSM
+name: csm
 channels:
   - conda-forge
   - bioconda
@@ -209,4 +209,5 @@ dependencies:
     - biopython==1.83
     - levenshtein==0.26.1
     - iteround==1.0.4
-prefix: /Users/rwalton/opt/miniconda3/envs/CSM
+    - natsort==8.4.0
+prefix: /Users/rwalton/opt/miniconda3/envs/csm
