@@ -8,6 +8,7 @@ import gzip
 from tqdm import tqdm
 import constants
 import warnings
+import itertools
 
 def lorenz_curve(X, library_name='library'):
     X_sorted = X.copy()
@@ -297,8 +298,8 @@ def count_constructs(
     ----------
     lib_info_df : pandas.DataFrame
         DataFrame containing sample information including fastq file paths and sample metadata
-    lib_design_input_df : pandas.DataFrame 
-        DataFrame containing the library design with barcode sequences
+    lib_design_input_df : pandas.DataFrame
+        DataFrame containing the library design with barcode sequences.
     use_tRNA : bool, optional (default=False)
         Whether or not to use tRNA sequence as a mapping requirement. 
     iBAR2_UMI : bool, optional (default=False)
@@ -345,27 +346,12 @@ def count_constructs(
     - Dropout counts and distribution metrics (Gini coefficient, 90/10 ratio)
     """
     
-    lib_design_df = generate_unique_construct_identifiers(
-        lib_design_input_df, use_tRNA, iBAR2_UMI,
-        custom=custom_mapping_columns,
-    )
-
     df_total = pd.DataFrame()
     df_summary = pd.DataFrame()
-
-    # generate unique construct identifiers for library design if one design is passed as argument
-    if lib_design_input_df is not None:
-        lib_design_df = generate_unique_construct_identifiers(
-            lib_design_input_df, use_tRNA, iBAR2_UMI, custom=custom_mapping_columns)
-
+    lib_design_df = generate_unique_construct_identifiers(
+        lib_design_input_df, use_tRNA, iBAR2_UMI, custom=custom_mapping_columns)
+    
     for index, row in tqdm(lib_info_df.iterrows(), total=lib_info_df.shape[0]):
-        
-        # generate unique construct identifiers for library design if construct design is not passed as argument
-        # and instead is specified in the library info file
-        if lib_design_input_df is None:
-            lib_design_df = generate_unique_construct_identifiers(
-                pd.read_csv(row['design']), use_tRNA, iBAR2_UMI,
-                custom=custom_mapping_columns)
 
         if 'dialout' in lib_info_df.columns:
             lib_design_index = {
@@ -423,7 +409,7 @@ def count_constructs(
         # add oligo counts to library design dataframe
         if index==0:
             lib_design_counts_df = pd.merge(
-                lib_design_df, 
+                lib_design_input_df, 
                 pd.Series(df_barcodes['design_index'].value_counts(),
                     name=row['sample_ID']),
                     left_index=True, right_index=True, how='outer').fillna(0)
@@ -446,12 +432,12 @@ def count_constructs(
             sublib_design_counts_df = lib_design_counts_df[lib_design_counts_df['dialout']==row['dialout']]
         else:
             sublib_design_counts_df = lib_design_counts_df
-            
+
         # record summary statistics
         df_summary.loc[row['sample_ID'], 'timepoint'] = row['timepoint']
         df_summary.loc[row['sample_ID'], 'replicate'] = row['replicate']
         df_summary.loc[row['sample_ID'], 'n_constructs'] = len(lib_design_df)
-        df_summary.loc[row['sample_ID'], 'tot_reads'] = len(df_barcodes)
+        df_summary.loc[row['sample_ID'], 'total_read_count'] = len(df_barcodes)
         df_summary.loc[row['sample_ID'], 'NGS_coverage'] = len(df_barcodes)/len(lib_design_df)
         df_barcodes_mapped = df_barcodes[df_barcodes['design_index'].notna()]
 
@@ -462,111 +448,148 @@ def count_constructs(
         df_summary.loc[row['sample_ID'], 'tRNA_map'] = df_barcodes['tRNA_map'].sum()/len(df_barcodes)
         
         if iBAR2_UMI:
-            df_summary.loc[row['sample_ID'], 'iBAR_2_UMI'] = sublib_design_counts_df[row['sample_ID']+'_UMI'].mean()
+            df_summary.loc[row['sample_ID'], 'iBAR_2_UMI_mean_count'] = sublib_design_counts_df[row['sample_ID']+'_UMI'].mean()
 
         if use_tRNA:
             if iBAR2_UMI:
-                df_summary.loc[row['sample_ID'], 'all_elements_mapped'] =  (
+                df_summary.loc[row['sample_ID'], 'all_elements_mapped_count'] =  (
                     df_barcodes['spacer_1_map'] & df_barcodes['iBAR_1_map'] &\
                     df_barcodes['tRNA_map'] &\
                     df_barcodes['spacer_2_map']
                     ).sum()
             else:
-                df_summary.loc[row['sample_ID'], 'all_elements_mapped'] =  (
+                df_summary.loc[row['sample_ID'], 'all_elements_mapped_count'] =  (
                     df_barcodes['spacer_1_map'] & df_barcodes['iBAR_1_map'] &\
                     df_barcodes['tRNA_map'] &\
                     df_barcodes['spacer_2_map'] & df_barcodes['iBAR_2_map']
                     ).sum()
         else:
             if iBAR2_UMI:
-                df_summary.loc[row['sample_ID'], 'all_elements_mapped'] =  (
+                df_summary.loc[row['sample_ID'], 'all_elements_mapped_count'] =  (
                     df_barcodes['spacer_1_map'] & df_barcodes['iBAR_1_map'] &\
                     df_barcodes['spacer_2_map']
                     ).sum()
             else:
-                df_summary.loc[row['sample_ID'], 'all_elements_mapped'] =  (
+                df_summary.loc[row['sample_ID'], 'all_elements_mapped_count'] =  (
                     df_barcodes['spacer_1_map'] & df_barcodes['iBAR_1_map'] &\
                     df_barcodes['spacer_2_map'] & df_barcodes['iBAR_2_map']
                     ).sum()
                 
         if custom_mapping_columns is not None:
                 mapping_columns = [c+'_map' for c in custom_mapping_columns]
-                df_summary.loc[row['sample_ID'], 'all_elements_mapped'] = df_barcodes[mapping_columns].all(axis=1).sum()
+                df_summary.loc[row['sample_ID'], 'all_elements_mapped_count'] = df_barcodes[mapping_columns].all(axis=1).sum()
 
-        df_summary.loc[row['sample_ID'], 'mapped_constructs'] = len(df_barcodes_mapped)
+        df_summary.loc[row['sample_ID'], 'mapped_constructs_count'] = len(df_barcodes_mapped)
         # frequencies of mapping and recombination
-        df_summary.loc[row['sample_ID'], 'fraction_mapped'] = df_summary.loc[row['sample_ID'], 'mapped_constructs']/\
-            df_summary.loc[row['sample_ID'], 'tot_reads']
+        df_summary.loc[row['sample_ID'], 'fraction_mapped'] = df_summary.loc[row['sample_ID'], 'mapped_constructs_count']/\
+            df_summary.loc[row['sample_ID'], 'total_read_count']
         df_summary.loc[row['sample_ID'], 'fraction_recombined'] = 1 - \
-            df_summary.loc[row['sample_ID'], 'mapped_constructs'] / df_summary.loc[row['sample_ID'], 'all_elements_mapped']
+            df_summary.loc[row['sample_ID'], 'mapped_constructs_count'] / df_summary.loc[row['sample_ID'], 'all_elements_mapped_count']
         # dropout and uniformity
         df_summary.loc[row['sample_ID'], 'dropout_count'] = (sublib_design_counts_df[row['sample_ID']]==0).sum()
         df_summary.loc[row['sample_ID'], 'gini_coefficient'] =  gini(sublib_design_counts_df[row['sample_ID']].values)
         df_summary.loc[row['sample_ID'], 'ratio_90_10'] = ratio_9010(sublib_design_counts_df[row['sample_ID']].values)
     
     df_summary.index.rename('sample_ID', inplace=True)
+
     if return_raw_barcodes:
-        return design_count_dict, df_summary, df_total
+        return lib_design_counts_df, df_summary, df_total
     else:
         return lib_design_counts_df, df_summary
 
 
+def display_summary_table(df):
+    """
+    Nice display of summary metrics.
+    """
+    summary_df = df.copy()
+    count_columns = ['total_read_count','all_elements_mapped_count', 'mapped_constructs_count', 
+                     'n_constructs', 'dropout_count', 'iBAR_2_UMI_mean_count']
+    percent_columns = ['spacer_1_map', 'iBAR_1_map', 'spacer_2_map', 'iBAR_2_map', 'fraction_mapped','fraction_recombined']
+    decimal_columns = [ 'gini_coefficient', 'ratio_90_10', 'NGS_coverage']
+    count_columns = [c for c in count_columns if c in summary_df.columns]
+    percent_columns = [c for c in percent_columns if c in summary_df.columns]
+    decimal_columns = [c for c in decimal_columns if c in summary_df.columns]
+
+    summary_df[count_columns] = summary_df[count_columns].map(lambda x: "{0:,.0f}".format(x))
+    summary_df[percent_columns] = summary_df[percent_columns].map(lambda x: "{0:.02%}".format(x))
+    summary_df[decimal_columns] = summary_df[decimal_columns].map(lambda x: "{0:.02f}".format(x))
+
+    return summary_df[count_columns + percent_columns + decimal_columns].T
+    
+
 def plot_summary_metrics(summary_df):
+
+    plt.figure(figsize=(1.5*len(summary_df),3))
     df_summary_melt = pd.melt(
         summary_df.reset_index(), 
         id_vars='sample_ID', 
         value_vars=['spacer_1_map','iBAR_1_map','spacer_2_map','iBAR_2_map','fraction_mapped']
         )
-    plt.figure(figsize=(1.5*len(summary_df),3))
     sns.barplot(df_summary_melt, x='sample_ID', y='value', hue='variable', palette='tab20')
     plt.ylabel('fraction of reads')
     plt.ylim(0,1)
+    plt.xticks(rotation=90)
     plt.legend(bbox_to_anchor=(1,1))
     plt.show()
 
-    plt.figure(figsize=(0.5*len(summary_df),3))
-    sns.barplot(summary_df, x=summary_df.index, y='fraction_recombined')
-    # plt.ylim(0,1)
-    plt.ylim(0.0001,1)
+    f, (a1, a2, a3) = plt.subplots( 1, 3, figsize=(3*len(summary_df),5))
+    plt.subplot(1,3,1)
+    sns.barplot(summary_df, ax=a1, x=summary_df.index, y='fraction_recombined')
+    plt.ylim(0.001,1)
     plt.yscale('log')
     plt.xticks(rotation=90)
-    plt.show()
 
-    plt.figure(figsize=(0.5*len(summary_df),3))
-    sns.barplot(summary_df, x=summary_df.index, y='gini_coefficient')
+    plt.subplot(1,3,2)
+    sns.barplot(summary_df, ax=a2, x=summary_df.index, y='gini_coefficient')
+    plt.ylim(0,1)
     plt.xticks(rotation=90)
-    plt.show()
 
-    plt.figure(figsize=(0.5*len(summary_df),3))
-    sns.barplot(summary_df, x=summary_df.index, y='ratio_90_10')    
+    plt.subplot(1,3,3)
+    sns.barplot(summary_df, ax=a3, x=summary_df.index, y='ratio_90_10')
+    a3.set_yscale('log', base=2)
+    plt.ylim(2**-0,2**6)
     plt.xticks(rotation=90)
+    
+    plt.tight_layout(pad=5)
     plt.show()
 
-def plot_lorenz_curves(samples_df, counts_dict, share_ax=True):
+
+def plot_lorenz_curves(samples_df, counts_df):
     """
     plot lorenz curves for all samples in summary_df
     """
+    for sample in samples_df['sample_ID'].values:
+        lorenz_curve(counts_df[sample].values, library_name=sample)
+        plt.title(sample)
 
-    for ref, df in counts_dict.items():
-        samples = [s for s in df.columns if s in samples_df['sample_ID'].values]
-        for sample in samples:
-            lorenz_curve(df[sample].values, library_name=sample)
-            plt.title(sample)
+def plot_uniformity_histograms(samples_df, counts_df):
+    """
+    plot histogram of counts for all samples in summary_df
+    """
+    for sample in samples_df['sample_ID'].values:
+        plt.figure(figsize=(3,3))
+        sns.histplot(
+                counts_df[sample], kde=True, 
+                kde_kws={'bw_adjust': 2, 'cut': 0},
+                color='dodgerblue',
+                )
+        plt.title(sample)
+        plt.xlabel('reads per construct')
+        plt.ylabel('constructs')
+        plt.show()
 
-def plot_uniformity_histograms(samples_df, counts_dict):
-    """
-    plot histogram of gini coefficients for all samples in summary_df
-    """
-    for ref, df in counts_dict.items():
-        samples = [s for s in df.columns if s in samples_df['sample_ID'].values]
-        for sample in samples:
-            plt.figure(figsize=(3,3))
-            sns.histplot(
-                 df[sample], kde=True, 
-                 kde_kws={'bw_adjust': 2, 'cut': 0},
-                 color='dodgerblue',
-                 )
-            plt.title(sample)
-            plt.xlabel('reads per construct')
-            plt.ylabel('constructs')
-            plt.show()
+def plot_sample_scatterplots(samples_df, counts_df):
+
+    for sample_1, sample_2 in itertools.combinations(samples_df['sample_ID'].values, 2):
+        sns.jointplot(
+            data = counts_df,
+            x=sample_1, 
+            y=sample_2,
+            color='black', linewidth=0, alpha=0.33, s=5,
+            height=3,
+            )
+        plt.xlim(-10)
+        plt.ylim(-10)
+        plt.grid(alpha=0.2)
+        plt.show()
