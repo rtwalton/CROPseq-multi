@@ -353,12 +353,19 @@ def count_constructs(
     df_total = pd.DataFrame()
     df_summary = pd.DataFrame()
 
+    # generate unique construct identifiers for library design if one design is passed as argument
+    if lib_design_input_df is not None:
+        lib_design_df = generate_unique_construct_identifiers(
+            lib_design_input_df, use_tRNA, iBAR2_UMI, custom=custom_mapping_columns)
+
     for index, row in tqdm(lib_info_df.iterrows(), total=lib_info_df.shape[0]):
         
         # generate unique construct identifiers for library design if construct design is not passed as argument
         # and instead is specified in the library info file
         if lib_design_input_df is None:
-            lib_design_df = generate_unique_construct_identifiers(pd.read_csv(row['design']), use_tRNA, iBAR2_UMI)
+            lib_design_df = generate_unique_construct_identifiers(
+                pd.read_csv(row['design']), use_tRNA, iBAR2_UMI,
+                custom=custom_mapping_columns)
 
         if 'dialout' in lib_info_df.columns:
             lib_design_index = {
@@ -439,9 +446,11 @@ def count_constructs(
             sublib_design_counts_df = lib_design_counts_df[lib_design_counts_df['dialout']==row['dialout']]
         else:
             sublib_design_counts_df = lib_design_counts_df
+            
         # record summary statistics
         df_summary.loc[row['sample_ID'], 'timepoint'] = row['timepoint']
         df_summary.loc[row['sample_ID'], 'replicate'] = row['replicate']
+        df_summary.loc[row['sample_ID'], 'n_constructs'] = len(lib_design_df)
         df_summary.loc[row['sample_ID'], 'tot_reads'] = len(df_barcodes)
         df_summary.loc[row['sample_ID'], 'NGS_coverage'] = len(df_barcodes)/len(lib_design_df)
         df_barcodes_mapped = df_barcodes[df_barcodes['design_index'].notna()]
@@ -501,3 +510,63 @@ def count_constructs(
     else:
         return lib_design_counts_df, df_summary
 
+
+def plot_summary_metrics(summary_df):
+    df_summary_melt = pd.melt(
+        summary_df.reset_index(), 
+        id_vars='sample_ID', 
+        value_vars=['spacer_1_map','iBAR_1_map','spacer_2_map','iBAR_2_map','fraction_mapped']
+        )
+    plt.figure(figsize=(1.5*len(summary_df),3))
+    sns.barplot(df_summary_melt, x='sample_ID', y='value', hue='variable', palette='tab20')
+    plt.ylabel('fraction of reads')
+    plt.ylim(0,1)
+    plt.legend(bbox_to_anchor=(1,1))
+    plt.show()
+
+    plt.figure(figsize=(0.5*len(summary_df),3))
+    sns.barplot(summary_df, x=summary_df.index, y='fraction_recombined')
+    # plt.ylim(0,1)
+    plt.ylim(0.0001,1)
+    plt.yscale('log')
+    plt.xticks(rotation=90)
+    plt.show()
+
+    plt.figure(figsize=(0.5*len(summary_df),3))
+    sns.barplot(summary_df, x=summary_df.index, y='gini_coefficient')
+    plt.xticks(rotation=90)
+    plt.show()
+
+    plt.figure(figsize=(0.5*len(summary_df),3))
+    sns.barplot(summary_df, x=summary_df.index, y='ratio_90_10')    
+    plt.xticks(rotation=90)
+    plt.show()
+
+def plot_lorenz_curves(samples_df, counts_dict, share_ax=True):
+    """
+    plot lorenz curves for all samples in summary_df
+    """
+
+    for ref, df in counts_dict.items():
+        samples = [s for s in df.columns if s in samples_df['sample_ID'].values]
+        for sample in samples:
+            lorenz_curve(df[sample].values, library_name=sample)
+            plt.title(sample)
+
+def plot_uniformity_histograms(samples_df, counts_dict):
+    """
+    plot histogram of gini coefficients for all samples in summary_df
+    """
+    for ref, df in counts_dict.items():
+        samples = [s for s in df.columns if s in samples_df['sample_ID'].values]
+        for sample in samples:
+            plt.figure(figsize=(3,3))
+            sns.histplot(
+                 df[sample], kde=True, 
+                 kde_kws={'bw_adjust': 2, 'cut': 0},
+                 color='dodgerblue',
+                 )
+            plt.title(sample)
+            plt.xlabel('reads per construct')
+            plt.ylabel('constructs')
+            plt.show()
