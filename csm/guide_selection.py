@@ -7,7 +7,7 @@ from natsort import natsorted
 import matplotlib.pyplot as plt
 from constants import *
 from utils import *
-
+import time
 
 ##################################################################################################
 #                             pairing guides from a CRISPick output
@@ -708,3 +708,50 @@ def plot_genome_lengths(df_input):
 
     plt.tight_layout()
 
+def generate_GPP_internal_production_manifest(crispick_file_path, df_design, modality):
+    """
+    generate a GPP internal production manifest, a format for internal record keeping at GPP
+
+    """
+    
+    cols = ["Subpool Name","Target Taxon","CRISPR Mechanism","Target Gene ID","Target Gene Symbol","sgRNA Target Sequence"]
+    
+    df_GPP_ipm = pd.DataFrame(index=df_design.index)
+    
+    # leave this blank - GPP will assign an internal ID
+    df_GPP_ipm["Subpool Name"] = "CSM-%s"%time.strftime("%Y%m%d-%H%M%S")
+    
+    # here, 'sgRNA Target Sequence' will hold the full oligo sequence
+    df_GPP_ipm['sgRNA Target Sequence'] = df_design['oligo']
+    
+    # gene id and symbol are in format 'id;id', and 'symbol;symbol'
+    df_GPP_ipm['Target Gene ID'] = df_design['target'].astype(str) + ';' + df_design['target'].astype(str)
+    df_GPP_ipm['Target Gene Symbol'] = df_design['target_symbol'].astype(str) + ';' + df_design['target_symbol'].astype(str)
+    
+    # modality information 
+    if modality in ['CRISPRko', 'CRISPRi', 'CRISPRa']:
+        df_GPP_ipm['CRISPR Mechanism'] = modality
+    else:
+        raise ValueError(
+            f'modality {modality} not recognized. Options are "CRISPRko", "CRISPRi", and "CRISPRa"')
+
+    df_crispick = pd.read_table(crispick_file_path)
+    df_GPP_ipm['Target Taxon'] = df_design['target'].map(df_crispick.set_index('Target Gene ID')['Target Taxon'].to_dict())
+    
+    # fixing information for controls based on defaul control design files
+    # this is lazily hardcoded,  will not be appropriate if the controls are pulled from different design files
+    control_cats = ['INTERGENIC_CONTROL', 'NONTARGETING_CONTROL', 'OLFACTORY_RECEPTOR']
+    df_GPP_ipm.loc[df_design.category.isin(control_cats),'Target Taxon'] = 9606
+    df_GPP_ipm['Target Taxon'] = df_GPP_ipm['Target Taxon'].astype(int)
+    df_GPP_ipm.loc[df_design.category == 'INTERGENIC_CONTROL','Target Gene ID'] = 'ONE_INTERGENIC_SITE;ONE_INTERGENIC_SITE'
+    df_GPP_ipm.loc[df_design.category == 'INTERGENIC_CONTROL','Target Gene Symbol'] = 'ONE_INTERGENIC_SITE;ONE_INTERGENIC_SITE'
+    df_GPP_ipm.loc[df_design.category == 'NONTARGETING_CONTROL','Target Gene ID'] = 'NO_SITE;NO_SITE'
+    df_GPP_ipm.loc[df_design.category == 'NONTARGETING_CONTROL','Target Gene Symbol'] = 'NO_SITE;NO_SITE'
+    df_GPP_ipm.loc[df_design.category == 'OLFACTORY_RECEPTOR','Target Gene ID'] = \
+        df_design[df_design.category == 'OLFACTORY_RECEPTOR']['target'].astype(str) + ';' +\
+             df_design[df_design.category == 'OLFACTORY_RECEPTOR']['target'].astype(str)
+    df_GPP_ipm.loc[df_design.category == 'OLFACTORY_RECEPTOR','Target Gene Symbol'] = \
+        df_design[df_design.category == 'OLFACTORY_RECEPTOR']['target_symbol'].astype(str) + ';' +\
+             df_design[df_design.category == 'OLFACTORY_RECEPTOR']['target_symbol'].astype(str)
+    
+    return df_GPP_ipm[cols]
