@@ -26,8 +26,8 @@ def assign_tRNAs(df, method='random', overwrite=False):
 
     if overwrite:
         tRNA_assignments = []
-        for tRNA in ['tRNA_A','tRNA_P','tRNA_Q']:
-            tRNA_assignments += [tRNA for i in range(np.ceil(len(df)/3).astype(int))]
+        for tRNA in tRNA_seqs.keys():
+            tRNA_assignments += [tRNA for i in range(np.ceil(len(df)/len(tRNA_seqs.keys())).astype(int))]
         random.shuffle(tRNA_assignments)
         tRNA_assignments = tRNA_assignments[:len(df)]
         df['tRNA'] = tRNA_assignments
@@ -43,8 +43,8 @@ def assign_tRNAs(df, method='random', overwrite=False):
             return df
 
         tRNA_assignments = []
-        for tRNA in ['tRNA_A','tRNA_P','tRNA_Q']:
-            tRNA_assignments += [tRNA for i in range(np.ceil(n_tRNAs/3).astype(int))]
+        for tRNA in tRNA_seqs.keys():
+            tRNA_assignments += [tRNA for i in range(np.ceil(n_tRNAs/len(tRNA_seqs.keys())).astype(int))]
         random.shuffle(tRNA_assignments)
         tRNA_assignments = tRNA_assignments[: n_tRNAs]
         df.loc[df['tRNA'].isna(),'tRNA'] = tRNA_assignments
