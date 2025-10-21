@@ -9,6 +9,8 @@ from constants import *
 from utils import *
 import time
 
+from oligo_design import assign_tRNAs
+
 ##################################################################################################
 #                             pairing guides from a CRISPick output
 ##################################################################################################
@@ -755,3 +757,208 @@ def generate_GPP_internal_production_manifest(crispick_file_path, df_design, mod
              df_design[df_design.category == 'OLFACTORY_RECEPTOR']['target_symbol'].astype(str)
     
     return df_GPP_ipm[cols]
+
+
+def design_all_by_all(targeting_guides_df, control_guides_df, n_constructs_per_target):
+    """
+    Design all by all library including single-gene targeting constructs
+    and combination constructs. Pairing guides for use of best ranked guides and
+    consistent guide positioning and flanking context.
+    """
+    rng = np.random.default_rng(seed=0)
+    # filter spacers
+    targeting_guides_df['spacer_check'] = targeting_guides_df['sgRNA Sequence'].apply(check_spacer_1) &\
+        targeting_guides_df['sgRNA Sequence'].apply(check_spacer_2)
+    targeting_guides_df = targeting_guides_df.query('spacer_check')
+    # keep only top n_constructs_per_target remaining, by pick order
+    targeting_guides_df['filtered_pick_order'] = targeting_guides_df.sort_values(
+        ['Target Gene ID','Pick Order']).groupby('Target Gene ID').cumcount() + 1
+    targeting_guides_df = targeting_guides_df[targeting_guides_df['filtered_pick_order'] <= n_constructs_per_target]
+    
+    # also filter control spacers
+    control_guides_df['spacer_check'] = control_guides_df['sgRNA Sequence'].apply(check_spacer_1) &\
+        control_guides_df['sgRNA Sequence'].apply(check_spacer_2)
+    control_guides_df = control_guides_df.query('spacer_check')
+
+    # assign postion preferences to gene-targeting guides
+    for target, df in targeting_guides_df.sort_values(['Target Gene ID','Pick Order']).groupby('Target Gene ID'):
+        if rng.choice([True, False]):
+            cycler = itertools.cycle([2,1])
+        else:
+            cycler = itertools.cycle([1,2])
+            
+        pick_positions = [next(cycler) for x in range(1, len(df)+1)]
+        
+        targeting_guides_df.loc[df.index,'pick_position'] = pick_positions
+        
+    # assign tRNAs
+    targeting_guides_df = assign_tRNAs(targeting_guides_df)
+    control_guides_df = assign_tRNAs(control_guides_df)
+    
+    # design singles + controls
+    guide_pairs_singles_df = design_all_by_all_singles(targeting_guides_df, control_guides_df, n_constructs_per_target)
+    guide_pairs_singles_df['category'] = 'SINGLE_GENE_TARGETING'
+    # design combos
+    guide_pairs_combos_df = design_all_by_all_combos(targeting_guides_df, n_constructs_per_target)
+    guide_pairs_combos_df['category'] = 'COMBO_GENE_TARGETING'
+    
+    return pd.concat([guide_pairs_singles_df, guide_pairs_combos_df]).reset_index(drop=True)
+    
+    
+def design_all_by_all_singles(targeting_guides_df, control_guides_df, n_constructs_per_target):
+    
+    rng = np.random.default_rng(seed=0)
+
+    selections = []
+    for gA in targeting_guides_df['Target Gene ID'].unique():
+        
+        df_gA = targeting_guides_df[targeting_guides_df['Target Gene ID']==gA].copy().sort_values('Pick Order')
+
+        target_id = gA
+        target_symbol = df_gA['Target Gene Symbol'].unique()[0]
+        
+        target_selections = []
+        
+        while len(target_selections) < n_constructs_per_target:
+            sg_control = control_guides_df.loc[rng.choice(control_guides_df.index)]
+            
+            sgA = df_gA.iloc[0]
+
+            if sgA['pick_position'] == 1:
+                targeting_position = 1
+                control_position = 2
+                targeting_pick_order = sgA['Pick Order']
+                sg1_values = sgA[['Target Gene ID','Target Gene Symbol','sgRNA Sequence','Pick Order']].to_list()
+                sg2_values = sg_control[['Target Gene ID','Target Gene Symbol','sgRNA Sequence','Pick Order','tRNA']].to_list()
+            else:
+                targeting_position = 2
+                control_position = 1
+                targeting_pick_order = sgA['Pick Order']
+                sg1_values = sg_control[['Target Gene ID','Target Gene Symbol','sgRNA Sequence','Pick Order']].to_list()
+                sg2_values = sgA[['Target Gene ID','Target Gene Symbol','sgRNA Sequence','Pick Order','tRNA']].to_list()
+            
+            # drop the used sgRNA
+            df_gA.drop(sgA.name, inplace=True)
+            
+            target_selections += [
+                [target_id, target_symbol, targeting_position, targeting_pick_order, control_position]
+                + sg1_values + sg2_values]
+            selections += [
+                [target_id, target_symbol, targeting_position, targeting_pick_order, control_position]
+                + sg1_values + sg2_values]
+
+    df_singles_pairs = pd.DataFrame(
+        selections,
+        columns=[
+            'target', 'target_symbol', 
+            'targeting_spacer_pos', 'targeting_spacer_pick_order', 'control_spacer_pos',
+            'target_ID_pos_1','target_symbol_pos_1','spacer_1','pick_order_pos_1',
+            'target_ID_pos_2','target_symbol_pos_2','spacer_2','pick_order_pos_2',
+            'tRNA'
+            ]
+        )
+
+    return(df_singles_pairs)
+
+def design_all_by_all_combos(targeting_guides_df, n_constructs_per_target):
+    
+    rng = np.random.default_rng(seed=0)
+    selections = []
+    for gA, gB in itertools.combinations(targeting_guides_df['Target Gene ID'].unique(), 2):
+        
+        df_gA = targeting_guides_df[targeting_guides_df['Target Gene ID']==gA].copy().sort_values('Pick Order')    
+        df_gB = targeting_guides_df[targeting_guides_df['Target Gene ID']==gB].copy().sort_values('Pick Order')
+
+        target_id = str(gA) + '_' + str(gB)
+        symbol_A = df_gA['Target Gene Symbol'].unique()[0]
+        symbol_B = df_gB['Target Gene Symbol'].unique()[0]
+        target_symbol = str(symbol_A) + '_' + str(symbol_B)
+        
+        iterator = itertools.cycle([gA, gB])
+
+        target_selections = []
+        
+        # iterate until we have the desired number of constructs per target
+        while len(target_selections) < n_constructs_per_target:
+
+            df_gA_p1 = df_gA[df_gA['pick_position']==1]
+            df_gA_p2 = df_gA[df_gA['pick_position']==2]
+            df_gB_p1 = df_gB[df_gB['pick_position']==1]
+            df_gB_p2 = df_gB[df_gB['pick_position']==2]
+                    
+            first = next(iterator)
+            # get the best position 1 for gA and best position 2 for gB:
+            if first == gA:
+                if (len(df_gA_p1) != 0) & (len(df_gB_p2)!=0):
+                    sg1 = df_gA_p1.iloc[0]
+                    sg1_values = sg1[['Target Gene ID','Target Gene Symbol','sgRNA Sequence','Pick Order']].to_list()
+                    sg2 = df_gB_p2.iloc[0]
+                    # sgRNA 2 determines the tRNA
+                    sg2_values = sg2[['Target Gene ID','Target Gene Symbol','sgRNA Sequence','Pick Order','tRNA']].to_list()
+                    
+                    # now drop the selected guides
+                    df_gA.drop(sg1.name, inplace=True)
+                    df_gB.drop(sg2.name, inplace=True)
+                    
+                elif (len(df_gA) != 0) & (len(df_gB)!=0): 
+                    # we ran out of guides in preferred positions but we have some remaining
+                    sg1 = df_gA.iloc[0]
+                    sg1_values = sg1[['Target Gene ID','Target Gene Symbol','sgRNA Sequence','Pick Order']].to_list()
+                    sg2 = df_gB.iloc[0]
+                    # sgRNA 2 determines the tRNA
+                    sg2_values = sg2[['Target Gene ID','Target Gene Symbol','sgRNA Sequence','Pick Order','tRNA']].to_list()
+
+                    # now drop the selected guides
+                    df_gA.drop(sg1.name, inplace=True)
+                    df_gB.drop(sg2.name, inplace=True)
+                    
+                else:
+                    # we ran out of guides entirely - warn the user
+                    warnings.warn(f"ran out of guides for {target_id} ({target_symbol})")
+                    break
+                    
+            else:
+                # get the best position 1 for gB and best position 2 for gA:
+                if (len(df_gB_p1) != 0) & (len(df_gA_p2)!=0):
+                    
+                    sg1 = df_gB_p1.iloc[0]
+                    sg1_values = sg1[['Target Gene ID','Target Gene Symbol','sgRNA Sequence','Pick Order']].to_list()
+                    sg2 = df_gA_p2.iloc[0]
+                    # sgRNA 2 determines the tRNA
+                    sg2_values = sg2[['Target Gene ID','Target Gene Symbol','sgRNA Sequence','Pick Order','tRNA']].to_list()
+                    
+                    # now drop the selected guides
+                    df_gB.drop(sg1.name, inplace=True)
+                    df_gA.drop(sg2.name, inplace=True)
+                    
+                elif (len(df_gA) != 0) & (len(df_gB)!=0): 
+                    # we ran out of guides in preferred positions but we have some remaining
+                    sg1 = df_gB.iloc[0]
+                    sg1_values = sg1[['Target Gene ID','Target Gene Symbol','sgRNA Sequence','Pick Order']].to_list()
+                    sg2 = df_gA.iloc[0]
+                    # sgRNA 2 determines the tRNA
+                    sg2_values = sg2[['Target Gene ID','Target Gene Symbol','sgRNA Sequence','Pick Order','tRNA']].to_list()
+                    
+                    # now drop the selected guides
+                    df_gB.drop(sg1.name, inplace=True)
+                    df_gA.drop(sg2.name, inplace=True)
+                else:
+                    # we ran out of guides entirely - warn the user
+                    warnings.warn(f"ran out of guides for {target_id} ({target_symbol})")
+                    break
+            
+            # record picks
+            target_selections += [[target_id, target_symbol] + sg1_values + sg2_values]
+            selections += [[target_id, target_symbol] + sg1_values + sg2_values]
+
+    df_guide_pairs = pd.DataFrame(
+        selections,
+        columns=[
+            'target', 'target_symbol',
+            'target_ID_pos_1','target_symbol_pos_1','spacer_1','pick_order_pos_1',
+            'target_ID_pos_2','target_symbol_pos_2','spacer_2','pick_order_pos_2',
+            'tRNA'
+            ]
+        )
+
+    return df_guide_pairs
