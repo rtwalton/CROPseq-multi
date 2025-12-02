@@ -857,6 +857,8 @@ def design_all_by_all_singles(targeting_guides_df, control_guides_df, n_construc
             'tRNA'
             ]
         )
+    df_singles_pairs['target_version'] = df_singles_pairs.sort_values(
+        ['target','targeting_spacer_pick_order']).groupby('target').cumcount() + 1
 
     return(df_singles_pairs)
 
@@ -960,5 +962,7 @@ def design_all_by_all_combos(targeting_guides_df, n_constructs_per_target):
             'tRNA'
             ]
         )
+    df_guide_pairs['pick_sum'] = df_guide_pairs['pick_order_pos_1'] + df_guide_pairs['pick_order_pos_2']
+    df_guide_pairs['target_version'] = df_guide_pairs.sort_values(['target','pick_sum']).groupby('target').cumcount() + 1
 
     return df_guide_pairs

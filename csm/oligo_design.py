@@ -15,19 +15,31 @@ from utils import *
 #                           build oligos for CROPseq-multi one-step cloning
 ##################################################################################################
 
-def assign_tRNAs(df, method='random', overwrite=False):
+def assign_tRNAs(df, method='random', overwrite=False, tRNAs=None):
     """
     add tRNA assignments to construct designs
 
     method - not implemented
     overwrite (bool): if True, overwrite any existing tRNA assignments. If False, only assign 
     missing (NaN) tRNA assignments.
+    tRNAs (None or list): specify which tRNAs to use. defaults to all tRNAs provided in 'constants'
     """
+    # default to using all tRNAs provided in constants
+    if isinstance(tRNAs, type(None)):
+        use_tRNAs = tRNA_seqs.keys()
+    # if a list of tRNAs is provided, use only the subset provided
+    elif isinstance(tRNAs, list):
+        use_tRNAs = [x for x in tRNAs if x in tRNA_seqs.keys()]
+        if len(tRNAs) != len(use_tRNAs):
+            raise ValueError(f"'tRNAs' must be 'None' or a list of valid tRNAs. Valid tRNAs are: {', '.join(tRNA_seqs.keys())}")
+    else:
+        raise ValueError(f"'tRNAs' must be 'None' or a list of valid tRNAs. Valid tRNAs are: {', '.join(tRNA_seqs.keys())}")
+
 
     if overwrite:
         tRNA_assignments = []
-        for tRNA in tRNA_seqs.keys():
-            tRNA_assignments += [tRNA for i in range(np.ceil(len(df)/len(tRNA_seqs.keys())).astype(int))]
+        for tRNA in use_tRNAs:
+            tRNA_assignments += [tRNA for i in range(np.ceil(len(df)/len(use_tRNAs)).astype(int))]
         random.shuffle(tRNA_assignments)
         tRNA_assignments = tRNA_assignments[:len(df)]
         df['tRNA'] = tRNA_assignments
@@ -43,8 +55,8 @@ def assign_tRNAs(df, method='random', overwrite=False):
             return df
 
         tRNA_assignments = []
-        for tRNA in tRNA_seqs.keys():
-            tRNA_assignments += [tRNA for i in range(np.ceil(n_tRNAs/len(tRNA_seqs.keys())).astype(int))]
+        for tRNA in use_tRNAs:
+            tRNA_assignments += [tRNA for i in range(np.ceil(n_tRNAs/len(use_tRNAs)).astype(int))]
         random.shuffle(tRNA_assignments)
         tRNA_assignments = tRNA_assignments[: n_tRNAs]
         df.loc[df['tRNA'].isna(),'tRNA'] = tRNA_assignments
