@@ -1,3 +1,6 @@
+import os
+import subprocess
+import tempfile
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -277,17 +280,88 @@ def extract_barcodes_from_fastq_pair_align(
 
     return df_barcodes
 
-def count_constructs(
-    lib_info_df, 
+
+def _count_constructs_bash(
+    lib_info_df,
     lib_design_input_df,
-    use_tRNA=False, 
+    use_tRNA=False,
+    custom_read_primers=True,
+    single_fastq=False,
+    method='align',
+    max_reads=1e7,
+    bash_script=None,
+):
+    """Run the bash backend for count_constructs; called by count_constructs(backend='bash')."""
+    if bash_script is None:
+        bash_script = os.path.join(os.path.dirname(__file__), '..', 'csm_count_constructs.sh')
+    bash_script = os.path.abspath(bash_script)
+    if not os.path.isfile(bash_script):
+        raise FileNotFoundError(
+            f"Bash script not found: {bash_script}\n"
+            "Expected csm_count_constructs.sh in the project root directory."
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        lib_csv = os.path.join(tmpdir, 'library_design.csv')
+        lib_design_input_df.to_csv(lib_csv, index=False)
+
+        lib_design_counts_df = lib_design_input_df.copy()
+        summary_frames = []
+
+        for _, row in tqdm(lib_info_df.iterrows(), total=lib_info_df.shape[0]):
+            sample_id = row['sample_ID']
+            out_prefix = os.path.join(tmpdir, sample_id)
+
+            cmd = [
+                'bash', bash_script,
+                '-1', row['fastq_R1'],
+                '-2', row['fastq_R2'],
+                '-l', lib_csv,
+                '-o', out_prefix,
+                '-s', sample_id,
+                '--method', method,
+                '--max-reads', str(int(max_reads)),
+            ]
+            if use_tRNA:
+                cmd.append('--use-tRNA')
+            if custom_read_primers:
+                cmd.append('--custom-primers')
+            if single_fastq:
+                cmd.append('--single-fastq')
+
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.stderr:
+                print(result.stderr, end='')
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"Bash backend failed for sample '{sample_id}':\n{result.stderr}"
+                )
+
+            # Merge per-construct counts into cumulative DataFrame
+            counts_csv = out_prefix + '_counts.csv'
+            sample_counts = pd.read_csv(counts_csv)[[sample_id]]
+            lib_design_counts_df = lib_design_counts_df.join(sample_counts)
+
+            summary_frames.append(pd.read_csv(out_prefix + '_summary.csv', index_col='sample_ID'))
+
+    df_summary = pd.concat(summary_frames)
+    df_summary.index.rename('sample_ID', inplace=True)
+    return lib_design_counts_df, df_summary
+
+
+def count_constructs(
+    lib_info_df,
+    lib_design_input_df,
+    use_tRNA=False,
     iBAR2_UMI=False,
-    custom_read_primers = True,
-    single_fastq = False,
+    custom_read_primers=True,
+    single_fastq=False,
     return_raw_barcodes=False,
-    method = 'align',
+    method='align',
     max_reads=1e7,
     custom_mapping_columns=None,
+    backend='python',
+    bash_script=None,
     ):
     
     """
@@ -322,15 +396,23 @@ def count_constructs(
         1e7 reads is sufficient for most libraries.
     custom_mapping_columns : list, optional (default=None)
         List of columns to use for mapping barcodes. Must uniquely identify constructs.
+    backend : str, optional (default='python')
+        Execution backend: 'python' runs the pure-Python implementation; 'bash' delegates
+        to csm_count_constructs.sh (faster for large FASTQ files).
+        Note: the bash backend does not support iBAR2_UMI, custom_mapping_columns, or
+        return_raw_barcodes — those arguments are silently ignored when backend='bash'.
+    bash_script : str, optional (default=None)
+        Explicit path to csm_count_constructs.sh. When None, the script is located
+        automatically relative to this module (../csm_count_constructs.sh).
     Returns
     -------
     tuple
         If return_raw_barcodes=False:
             - lib_design_counts_df : pandas.DataFrame
                 Library design with counts for each sample
-            - df_summary : pandas.DataFrame 
+            - df_summary : pandas.DataFrame
                 Summary statistics for each sample
-        If return_raw_barcodes=True:
+        If return_raw_barcodes=True (python backend only):
             - lib_design_counts_df : pandas.DataFrame
                 Library design with counts for each sample
             - df_summary : pandas.DataFrame
@@ -345,7 +427,30 @@ def count_constructs(
     - Fraction of reads mapped and recombined
     - Dropout counts and distribution metrics (Gini coefficient, 90/10 ratio)
     """
-    
+
+    if backend == 'bash':
+        unsupported = []
+        if iBAR2_UMI:
+            unsupported.append('iBAR2_UMI')
+        if custom_mapping_columns is not None:
+            unsupported.append('custom_mapping_columns')
+        if return_raw_barcodes:
+            unsupported.append('return_raw_barcodes')
+        if unsupported:
+            warnings.warn(
+                f"bash backend does not support: {', '.join(unsupported)}. "
+                "These arguments will be ignored."
+            )
+        return _count_constructs_bash(
+            lib_info_df, lib_design_input_df,
+            use_tRNA=use_tRNA,
+            custom_read_primers=custom_read_primers,
+            single_fastq=single_fastq,
+            method=method,
+            max_reads=max_reads,
+            bash_script=bash_script,
+        )
+
     df_total = pd.DataFrame()
     df_summary = pd.DataFrame()
     lib_design_df = generate_unique_construct_identifiers(
