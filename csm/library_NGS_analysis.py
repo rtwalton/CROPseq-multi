@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import tempfile
 import pandas as pd
@@ -281,71 +282,488 @@ def extract_barcodes_from_fastq_pair_align(
     return df_barcodes
 
 
+# ---------------------------------------------------------------------------
+# awk helper code embedded as a Python string.
+# Shared by extract_barcode_counts_subprocess for both extraction methods.
+# ---------------------------------------------------------------------------
+_AWK_HELPERS = r"""
+function rc(seq,    i, c, r) {
+    r = ""
+    for (i = length(seq); i >= 1; i--) {
+        c = substr(seq, i, 1)
+        if      (c == "A") r = r "T"
+        else if (c == "T") r = r "A"
+        else if (c == "C") r = r "G"
+        else if (c == "G") r = r "C"
+        else               r = r "N"
+    }
+    return r
+}
+function safe_sub(seq, s, n,    out, j) {
+    if (s < 1 || s + n - 1 > length(seq)) {
+        out = ""; for (j = 0; j < n; j++) out = out "N"; return out
+    }
+    return substr(seq, s, n)
+}
+"""
+
+# Complement translation table shared by the fast-Python extraction path
+_DNA_COMP = str.maketrans('ACGTacgtNn', 'TGCAtgcaNn')
+
+
+def _extract_barcode_counts_python(
+    fastq_pair,
+    method='align',
+    custom_read_primers=True,
+    single_fastq=False,
+    max_reads=1e7,
+    spacer_len=20,
+    iBAR_len=12,
+):
+    """
+    Pure-Python barcode extraction with dict-based aggregation.
+
+    Replaces the slow per-read-append pattern in extract_barcodes_from_fastq_pair* with:
+      - str.translate() for reverse-complement (3× faster than Biopython)
+      - a dict counter so the final DataFrame has ~library_size rows, not ~total_reads rows
+
+    Returns the same compact DataFrame as extract_barcode_counts_subprocess.
+    Called automatically by extract_barcode_counts_subprocess when gawk/mawk are absent.
+    """
+    def rc(s):
+        return s.translate(_DNA_COMP)[::-1]
+
+    def safe_sub(seq, start, length):
+        if start < 0 or start + length > len(seq):
+            return 'N' * length
+        return seq[start:start + length]
+
+    stem1    = constants.CSM_stem_1
+    stem2_rc = str(Seq(constants.CSM_stem_2).reverse_complement())
+    stem_len = len(stem1)
+
+    r1_off = 0 if custom_read_primers else len(constants.read_1_primer_seq)
+    r2_off = 0 if custom_read_primers else len(constants.read_2_primer_seq)
+
+    def _open(f):
+        return gzip.open(f, 'rt') if f.endswith(('.gz', '.gzip')) else open(f, 'rt')
+
+    counts = {}   # (sp1, ib1, sp2, ib2, tRNA_short) → int
+    total  = 0
+
+    f1 = _open(fastq_pair[0])
+    f2 = _open(fastq_pair[0] if single_fastq else fastq_pair[1])
+
+    try:
+        while True:
+            # Read one record from each file (4 lines each)
+            if single_fastq:
+                h1 = f1.readline()
+                if not h1: break
+                s1 = f1.readline().strip(); f1.readline(); f1.readline()
+                f1.readline()
+                s2 = f1.readline().strip(); f1.readline(); f1.readline()
+                # Identify R1/R2 by stem presence
+                if (stem1 in s1) or (stem2_rc not in s2):
+                    r1s, r2s = s1, s2
+                else:
+                    r1s, r2s = s2, s1
+            else:
+                h1 = f1.readline()
+                if not h1: break
+                r1s = f1.readline().strip(); f1.readline(); f1.readline()
+                f2.readline()
+                r2s = f2.readline().strip(); f2.readline(); f2.readline()
+
+            # --- Barcode extraction ---
+            if method == 'align':
+                p1 = r1s.find(stem1)
+                p2 = r2s.find(stem2_rc)
+                if p1 >= 0:
+                    sp1 = safe_sub(r1s, p1 - spacer_len, spacer_len)
+                    ib1 = rc(safe_sub(r1s, p1 + stem_len, iBAR_len))
+                else:
+                    sp1, ib1 = 'N' * spacer_len, 'N' * iBAR_len
+                if p2 >= 0:
+                    sp2 = rc(safe_sub(r2s, p2 + stem_len, spacer_len))
+                    ib2 = safe_sub(r2s, p2 - iBAR_len, iBAR_len)
+                    ts  = rc(safe_sub(r2s, p2 + stem_len + spacer_len, 4))
+                else:
+                    sp2, ib2, ts = 'N' * spacer_len, 'N' * iBAR_len, 'NNNN'
+            else:  # 'position'
+                sp1 = safe_sub(r1s, r1_off,       spacer_len)
+                ib1 = rc(safe_sub(r1s, r1_off + 39, iBAR_len))
+                sp2 = rc(safe_sub(r2s, r2_off + 31, spacer_len))
+                ib2 = safe_sub(r2s, r2_off,         iBAR_len)
+                ts  = rc(safe_sub(r2s, r2_off + 51, 4))
+
+            key = (sp1, ib1, sp2, ib2, ts)
+            counts[key] = counts.get(key, 0) + 1
+            total += 1
+            if total >= max_reads:
+                break
+    finally:
+        f1.close()
+        if not single_fastq:
+            f2.close()
+
+    if not counts:
+        return pd.DataFrame(
+            columns=['spacer_1', 'iBAR_1', 'spacer_2', 'iBAR_2', 'tRNA_short', 'tRNA', 'count'])
+
+    df = pd.DataFrame(
+        [(k[0], k[1], k[2], k[3], k[4], v) for k, v in counts.items()],
+        columns=['spacer_1', 'iBAR_1', 'spacer_2', 'iBAR_2', 'tRNA_short', 'count'],
+    )
+    df['tRNA'] = df['tRNA_short'].map(constants.tRNA_map_by_prefix)
+    return df
+
+
+def extract_barcode_counts_subprocess(
+    fastq_pair,
+    method='align',
+    custom_read_primers=True,
+    single_fastq=False,
+    max_reads=1e7,
+    spacer_len=20,
+    iBAR_len=12,
+):
+    """
+    Extract and aggregate barcode combinations from a FASTQ pair using an awk subprocess.
+
+    This is the fast replacement for the pure-Python extraction functions.  Instead of
+    loading ~10 million reads into a Python DataFrame (one row per read), awk extracts
+    barcodes at C speed, aggregates identical combinations in an associative array, and
+    streams back only the unique combos with their counts.  For a typical CROPseq-multi
+    library (~1,000 constructs, ~10M reads) this reduces the data handed to Python from
+    ~10,000,000 rows to ~1,000–5,000 rows.
+
+    Parameters
+    ----------
+    fastq_pair : list of str
+        [path_R1, path_R2] — gzip or plain FASTQ.  For single_fastq mode pass the
+        same path twice (or any second path; it is ignored).
+    method : str
+        'align' (default) — finds CSM stem sequences dynamically.
+        'position' — uses fixed offsets from the read start.
+    custom_read_primers : bool
+        If True (default) the read starts at the dialout primer (offset = 0).
+        If False the read starts with the Illumina sequencing primer; primer length
+        is subtracted before extracting barcodes (position method only).
+    single_fastq : bool
+        If True, R1 and R2 are interleaved in a single file (alternating records).
+    max_reads : int
+        Stop after this many read pairs.
+    spacer_len, iBAR_len : int
+        Override default spacer/iBAR lengths (20 and 12 nt).
+
+    Returns
+    -------
+    pandas.DataFrame
+        Columns: spacer_1, iBAR_1, spacer_2, iBAR_2, tRNA_short, tRNA, count
+        One row per unique barcode combination observed in the data.
+
+    Notes
+    -----
+    Requires ``gawk`` or ``mawk`` on PATH.  If neither is found, falls back
+    automatically to _extract_barcode_counts_python (dict aggregation with
+    str.translate RC — still much faster than the legacy per-read DataFrame path).
+    """
+    awk_exe = shutil.which('gawk') or shutil.which('mawk')
+    if awk_exe is None:
+        return _extract_barcode_counts_python(
+            fastq_pair, method=method,
+            custom_read_primers=custom_read_primers,
+            single_fastq=single_fastq,
+            max_reads=max_reads,
+            spacer_len=spacer_len,
+            iBAR_len=iBAR_len,
+        )
+
+    from io import StringIO
+
+    r1 = fastq_pair[0]
+    r2 = fastq_pair[1] if not single_fastq else fastq_pair[0]
+
+    stem1    = constants.CSM_stem_1
+    stem2_rc = str(Seq(constants.CSM_stem_2).reverse_complement())
+    stem_len = len(stem1)   # 19
+
+    r1_off = 0 if custom_read_primers else len(constants.read_1_primer_seq)
+    r2_off = 0 if custom_read_primers else len(constants.read_2_primer_seq)
+
+    # Build the tRNA lookup table for awk's BEGIN block
+    trna_init = '\n    '.join(
+        f'trna_map["{k}"] = "{v}"'
+        for k, v in constants.tRNA_map_by_prefix.items()
+    )
+
+    # --- Extraction logic: differs by method ---
+    if method == 'align':
+        extraction_block = f"""\
+    p1 = index(r1, STEM1)   - 1
+    p2 = index(r2, STEM2RC) - 1
+    if (p1 >= 0) {{
+        sp1 = safe_sub(r1, p1 - SL + 1, SL)
+        ib1 = rc(safe_sub(r1, p1 + STEMLEN + 1, IL))
+    }} else {{ sp1 = NSP; ib1 = NIB }}
+    if (p2 >= 0) {{
+        sp2 = rc(safe_sub(r2, p2 + STEMLEN + 1, SL))
+        ib2 = safe_sub(r2, p2 - IL + 1, IL)
+        ts  = rc(safe_sub(r2, p2 + STEMLEN + SL + 1, 4))
+    }} else {{ sp2 = NSP; ib2 = NIB; ts = "NNNN" }}"""
+    else:  # 'position'
+        extraction_block = f"""\
+    sp1 = safe_sub(r1, {r1_off} + 1,         SL)
+    ib1 = rc(safe_sub(r1, {r1_off} + 39 + 1, IL))
+    sp2 = rc(safe_sub(r2, {r2_off} + 31 + 1, SL))
+    ib2 = safe_sub(r2,    {r2_off} + 1,       IL)
+    ts  = rc(safe_sub(r2, {r2_off} + 51 + 1,  4))"""
+
+    # --- awk program: two modes selected by SINGLE_FASTQ variable ---
+    # Paired mode  (SINGLE_FASTQ=0): input is paste output → tab-sep lines,
+    #   NR%4==2 picks sequence lines, $1=R1, $2=R2.
+    # Single-fastq (SINGLE_FASTQ=1): input is one stream of 8 lines per pair,
+    #   NR%8==2 → first fragment seq, NR%8==6 → second fragment seq.
+    awk_prog = f"""\
+{_AWK_HELPERS}
+BEGIN {{
+    FS = "\\t"
+    {trna_init}
+    STEM1   = "{stem1}"
+    STEM2RC = "{stem2_rc}"
+    STEMLEN = {stem_len}
+    SL = {spacer_len}
+    IL = {iBAR_len}
+    NSP = ""; for (j = 0; j < SL; j++) NSP = NSP "N"
+    NIB = ""; for (j = 0; j < IL; j++) NIB = NIB "N"
+    reads = 0
+}}
+
+# ---- paired-end mode (paste output, tab-separated) ----
+SINGLE_FASTQ == 0 && NR % 4 == 2 {{
+    reads++; if (reads > MAX_READS) exit
+    r1 = $1; r2 = $2
+{extraction_block}
+    counts[sp1 "\\t" ib1 "\\t" sp2 "\\t" ib2 "\\t" ts]++
+}}
+
+# ---- single-fastq mode (interleaved, 8 lines per pair) ----
+SINGLE_FASTQ == 1 && NR % 8 == 2 {{ seq1 = $0 }}
+SINGLE_FASTQ == 1 && NR % 8 == 6 {{
+    seq2 = $0
+    reads++; if (reads > MAX_READS) exit
+    if (index(seq1, STEM1) > 0 || index(seq2, STEM2RC) == 0) {{
+        r1 = seq1; r2 = seq2
+    }} else {{
+        r1 = seq2; r2 = seq1
+    }}
+{extraction_block}
+    counts[sp1 "\\t" ib1 "\\t" sp2 "\\t" ib2 "\\t" ts]++
+}}
+
+END {{
+    for (k in counts) print k "\\t" counts[k]
+}}
+"""
+
+    def _open_cmd(f):
+        return f"gzip -dc '{f}'" if f.endswith(('.gz', '.gzip')) else f"cat '{f}'"
+
+    if single_fastq:
+        fastq_cmd = _open_cmd(r1)
+    else:
+        fastq_cmd = f"paste <({_open_cmd(r1)}) <({_open_cmd(r2)})"
+
+    # Write the awk program to a temp file to avoid shell-quoting issues
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.awk', delete=False) as awk_f:
+        awk_f.write(awk_prog)
+        awk_path = awk_f.name
+    try:
+        bash_cmd = (
+            f"{fastq_cmd} | "
+            f"{awk_exe} -v SINGLE_FASTQ={int(single_fastq)} "
+            f"           -v MAX_READS={int(max_reads)} "
+            f"           -f '{awk_path}'"
+        )
+        result = subprocess.run(
+            ['bash', '-c', bash_cmd],
+            capture_output=True, text=True, check=True,
+        )
+    finally:
+        os.unlink(awk_path)
+
+    df = pd.read_csv(
+        StringIO(result.stdout),
+        sep='\t',
+        names=['spacer_1', 'iBAR_1', 'spacer_2', 'iBAR_2', 'tRNA_short', 'count'],
+        dtype={'count': int},
+    )
+    df['tRNA'] = df['tRNA_short'].map(constants.tRNA_map_by_prefix)
+    return df
+
+
 def _count_constructs_bash(
     lib_info_df,
     lib_design_input_df,
     use_tRNA=False,
+    iBAR2_UMI=False,
     custom_read_primers=True,
     single_fastq=False,
+    return_raw_barcodes=False,
     method='align',
     max_reads=1e7,
-    bash_script=None,
+    custom_mapping_columns=None,
 ):
-    """Run the bash backend for count_constructs; called by count_constructs(backend='bash')."""
-    if bash_script is None:
-        bash_script = os.path.join(os.path.dirname(__file__), '..', 'csm_count_constructs.sh')
-    bash_script = os.path.abspath(bash_script)
-    if not os.path.isfile(bash_script):
-        raise FileNotFoundError(
-            f"Bash script not found: {bash_script}\n"
-            "Expected csm_count_constructs.sh in the project root directory."
+    """
+    Bash-accelerated backend for count_constructs.
+
+    Uses extract_barcode_counts_subprocess() to run FASTQ extraction in awk,
+    then performs all library mapping and statistics in Python on the resulting
+    compact table (~library_size rows, not ~total_reads rows).
+
+    Because statistics are computed as count-weighted sums over the aggregated
+    table, all features of the Python backend are fully supported including
+    iBAR2_UMI, custom_mapping_columns, and return_raw_barcodes.
+    """
+    df_total = pd.DataFrame()
+    df_summary = pd.DataFrame()
+    lib_design_df = generate_unique_construct_identifiers(
+        lib_design_input_df, use_tRNA, iBAR2_UMI, custom=custom_mapping_columns)
+
+    for index, row in tqdm(lib_info_df.iterrows(), total=lib_info_df.shape[0]):
+        sample_id = row['sample_ID']
+        fastq_pair = [row['fastq_R1'], row['fastq_R2']]
+
+        if 'dialout' in lib_info_df.columns:
+            lib_design_index = {
+                k: v for v, k in lib_design_df[
+                    lib_design_df['dialout'] == row['dialout']
+                ]['unique_barcode_combo'].to_dict().items()
+            }
+        else:
+            lib_design_index = {
+                k: v for v, k in lib_design_df['unique_barcode_combo'].to_dict().items()
+            }
+
+        # Fast awk extraction: ~library_size rows instead of ~total_reads rows
+        df_barcodes = extract_barcode_counts_subprocess(
+            fastq_pair,
+            method=method,
+            custom_read_primers=custom_read_primers,
+            single_fastq=single_fastq,
+            max_reads=max_reads,
         )
+        total_reads = int(df_barcodes['count'].sum())
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        lib_csv = os.path.join(tmpdir, 'library_design.csv')
-        lib_design_input_df.to_csv(lib_csv, index=False)
+        df_barcodes = generate_unique_construct_identifiers(
+            df_barcodes, use_tRNA, iBAR2_UMI, custom=custom_mapping_columns)
 
-        lib_design_counts_df = lib_design_input_df.copy()
-        summary_frames = []
+        # Map individual elements
+        df_barcodes['spacer_1_map'] = df_barcodes['spacer_1'].isin(lib_design_df['spacer_1'])
+        df_barcodes['iBAR_1_map']   = df_barcodes['iBAR_1'].isin(lib_design_df['iBAR_1'])
+        df_barcodes['spacer_2_map'] = df_barcodes['spacer_2'].isin(lib_design_df['spacer_2'])
+        df_barcodes['iBAR_2_map']   = df_barcodes['iBAR_2'].isin(lib_design_df['iBAR_2'])
+        df_barcodes['tRNA_map']     = df_barcodes['tRNA'].notna()
 
-        for _, row in tqdm(lib_info_df.iterrows(), total=lib_info_df.shape[0]):
-            sample_id = row['sample_ID']
-            out_prefix = os.path.join(tmpdir, sample_id)
+        # Map full constructs
+        df_barcodes['design_index'] = df_barcodes['unique_barcode_combo'].map(lib_design_index)
+        df_barcodes['sample']       = sample_id
+        df_barcodes['timepoint']    = row['timepoint']
+        df_barcodes['replicate']    = row['replicate']
 
-            cmd = [
-                'bash', bash_script,
-                '-1', row['fastq_R1'],
-                '-2', row['fastq_R2'],
-                '-l', lib_csv,
-                '-o', out_prefix,
-                '-s', sample_id,
-                '--method', method,
-                '--max-reads', str(int(max_reads)),
-            ]
-            if use_tRNA:
-                cmd.append('--use-tRNA')
-            if custom_read_primers:
-                cmd.append('--custom-primers')
-            if single_fastq:
-                cmd.append('--single-fastq')
+        if return_raw_barcodes:
+            df_total = pd.concat([df_total, df_barcodes])
 
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.stderr:
-                print(result.stderr, end='')
-            if result.returncode != 0:
-                raise RuntimeError(
-                    f"Bash backend failed for sample '{sample_id}':\n{result.stderr}"
-                )
+        # Per-construct counts: weighted sum of 'count' grouped by design_index
+        construct_counts = df_barcodes.groupby('design_index', dropna=True)['count'].sum()
 
-            # Merge per-construct counts into cumulative DataFrame
-            counts_csv = out_prefix + '_counts.csv'
-            sample_counts = pd.read_csv(counts_csv)[[sample_id]]
-            lib_design_counts_df = lib_design_counts_df.join(sample_counts)
+        if index == 0:
+            lib_design_counts_df = pd.merge(
+                lib_design_input_df,
+                pd.Series(construct_counts, name=sample_id),
+                left_index=True, right_index=True, how='outer').fillna(0)
+        else:
+            lib_design_counts_df = pd.merge(
+                lib_design_counts_df,
+                pd.Series(construct_counts, name=sample_id),
+                left_index=True, right_index=True, how='outer').fillna(0)
 
-            summary_frames.append(pd.read_csv(out_prefix + '_summary.csv', index_col='sample_ID'))
+        if iBAR2_UMI:
+            # Each row in df_barcodes is a unique barcode combo, so nunique(iBAR_2) per
+            # design_index equals the number of distinct iBAR_2 sequences observed —
+            # identical to the Python backend's groupby on the full per-read table.
+            umi_counts = df_barcodes.groupby('design_index', dropna=True)['iBAR_2'].nunique()
+            lib_design_counts_df = pd.merge(
+                lib_design_counts_df,
+                pd.Series(umi_counts, name=sample_id + '_UMI'),
+                left_index=True, right_index=True, how='outer').fillna(0)
 
-    df_summary = pd.concat(summary_frames)
+        if 'dialout' in lib_info_df.columns:
+            sublib_design_counts_df = lib_design_counts_df[
+                lib_design_counts_df['dialout'] == row['dialout']]
+        else:
+            sublib_design_counts_df = lib_design_counts_df
+
+        # Count-weighted statistics
+        # wsum(mask) = number of *reads* (not rows) satisfying mask
+        def wsum(mask):
+            return int((mask * df_barcodes['count']).sum())
+
+        df_barcodes_mapped = df_barcodes[df_barcodes['design_index'].notna()]
+        mapped_constructs_count = int(df_barcodes_mapped['count'].sum())
+
+        df_summary.loc[sample_id, 'timepoint']    = row['timepoint']
+        df_summary.loc[sample_id, 'replicate']    = row['replicate']
+        df_summary.loc[sample_id, 'n_constructs'] = len(lib_design_df)
+        df_summary.loc[sample_id, 'total_read_count'] = total_reads
+        df_summary.loc[sample_id, 'NGS_coverage'] = total_reads / len(lib_design_df)
+
+        df_summary.loc[sample_id, 'spacer_1_map'] = wsum(df_barcodes['spacer_1_map']) / total_reads
+        df_summary.loc[sample_id, 'iBAR_1_map']   = wsum(df_barcodes['iBAR_1_map'])   / total_reads
+        df_summary.loc[sample_id, 'spacer_2_map'] = wsum(df_barcodes['spacer_2_map']) / total_reads
+        df_summary.loc[sample_id, 'iBAR_2_map']   = wsum(df_barcodes['iBAR_2_map'])   / total_reads
+        df_summary.loc[sample_id, 'tRNA_map']     = wsum(df_barcodes['tRNA_map'])     / total_reads
+
+        if iBAR2_UMI:
+            df_summary.loc[sample_id, 'iBAR_2_UMI_mean_count'] = \
+                sublib_design_counts_df[sample_id + '_UMI'].mean()
+
+        if use_tRNA:
+            all_map = (df_barcodes['spacer_1_map'] & df_barcodes['iBAR_1_map'] &
+                       df_barcodes['tRNA_map'] & df_barcodes['spacer_2_map'])
+            if not iBAR2_UMI:
+                all_map = all_map & df_barcodes['iBAR_2_map']
+        else:
+            all_map = (df_barcodes['spacer_1_map'] & df_barcodes['iBAR_1_map'] &
+                       df_barcodes['spacer_2_map'])
+            if not iBAR2_UMI:
+                all_map = all_map & df_barcodes['iBAR_2_map']
+
+        if custom_mapping_columns is not None:
+            mapping_cols = [c + '_map' for c in custom_mapping_columns]
+            all_map = df_barcodes[mapping_cols].all(axis=1)
+
+        all_elements_mapped_count = wsum(all_map)
+
+        df_summary.loc[sample_id, 'all_elements_mapped_count'] = all_elements_mapped_count
+        df_summary.loc[sample_id, 'mapped_constructs_count']   = mapped_constructs_count
+        df_summary.loc[sample_id, 'fraction_mapped']           = \
+            mapped_constructs_count / total_reads
+        df_summary.loc[sample_id, 'fraction_recombined']       = \
+            1 - mapped_constructs_count / all_elements_mapped_count \
+            if all_elements_mapped_count > 0 else 0
+        df_summary.loc[sample_id, 'dropout_count'] = \
+            (sublib_design_counts_df[sample_id] == 0).sum()
+        df_summary.loc[sample_id, 'gini_coefficient'] = \
+            gini(sublib_design_counts_df[sample_id].values)
+        df_summary.loc[sample_id, 'ratio_90_10'] = \
+            ratio_9010(sublib_design_counts_df[sample_id].values)
+
     df_summary.index.rename('sample_ID', inplace=True)
+
+    if return_raw_barcodes:
+        return lib_design_counts_df, df_summary, df_total
     return lib_design_counts_df, df_summary
 
 
@@ -397,13 +815,14 @@ def count_constructs(
     custom_mapping_columns : list, optional (default=None)
         List of columns to use for mapping barcodes. Must uniquely identify constructs.
     backend : str, optional (default='python')
-        Execution backend: 'python' runs the pure-Python implementation; 'bash' delegates
-        to csm_count_constructs.sh (faster for large FASTQ files).
-        Note: the bash backend does not support iBAR2_UMI, custom_mapping_columns, or
-        return_raw_barcodes — those arguments are silently ignored when backend='bash'.
+        Execution backend.  'python' uses the pure-Python per-read loop.  'bash' runs
+        barcode extraction in awk (much faster for large FASTQ files: awk aggregates
+        ~10M reads to ~library_size rows before any data enters Python), then performs
+        library mapping and all statistics in Python.  Both backends produce identical
+        results and support all arguments including iBAR2_UMI, custom_mapping_columns,
+        and return_raw_barcodes.
     bash_script : str, optional (default=None)
-        Explicit path to csm_count_constructs.sh. When None, the script is located
-        automatically relative to this module (../csm_count_constructs.sh).
+        Unused; retained for API compatibility.
     Returns
     -------
     tuple
@@ -429,26 +848,16 @@ def count_constructs(
     """
 
     if backend == 'bash':
-        unsupported = []
-        if iBAR2_UMI:
-            unsupported.append('iBAR2_UMI')
-        if custom_mapping_columns is not None:
-            unsupported.append('custom_mapping_columns')
-        if return_raw_barcodes:
-            unsupported.append('return_raw_barcodes')
-        if unsupported:
-            warnings.warn(
-                f"bash backend does not support: {', '.join(unsupported)}. "
-                "These arguments will be ignored."
-            )
         return _count_constructs_bash(
             lib_info_df, lib_design_input_df,
             use_tRNA=use_tRNA,
+            iBAR2_UMI=iBAR2_UMI,
             custom_read_primers=custom_read_primers,
             single_fastq=single_fastq,
+            return_raw_barcodes=return_raw_barcodes,
             method=method,
             max_reads=max_reads,
-            bash_script=bash_script,
+            custom_mapping_columns=custom_mapping_columns,
         )
 
     df_total = pd.DataFrame()
