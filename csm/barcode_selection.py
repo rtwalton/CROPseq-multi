@@ -1,4 +1,5 @@
 
+import os
 import pandas as pd
 import numpy as np
 import random
@@ -16,17 +17,64 @@ from utils import *
 #                               iBAR selection workflows
 ##################################################################################################
 
+# GC and homopolymer defaults inherited from the n12_k3 Levenshtein parent design
+_SUBSET_GC_MIN = 0.25
+_SUBSET_GC_MAX = 0.75
+_SUBSET_HOMOPOLYMER_MAX = 4
+
+
+def load_subset_barcode_sets(script_dir=None):
+    """
+    Load available barcode subset files (generated from the n12_k3 Levenshtein parent set)
+    and return a summary DataFrame compatible with select_complete_and_pair_barcodes().
+
+    Subset files live in designed_barcode_sets/subsets/ relative to script_dir (or the
+    current working directory when script_dir is None).  Each row of the returned DataFrame
+    has columns: length, distance, n_barcodes; the index is the file path.
+    """
+    if script_dir is None:
+        script_dir = '.'
+    search = os.path.join(script_dir, 'designed_barcode_sets', 'subsets',
+                          'barcodes_subset_n*_k*_Levenshtein.csv')
+    bc_sets = pd.DataFrame()
+    for file in glob(search):
+        df_barcodes = pd.read_csv(file)
+        bc_sets.loc[file, 'length'] = int(df_barcodes['cycles'].iloc[0])
+        bc_sets.loc[file, 'distance'] = int(df_barcodes['min_levenshtein'].iloc[0])
+        bc_sets.loc[file, 'n_barcodes'] = len(df_barcodes)
+    return bc_sets
+
+
+def _load_barcode_file(path):
+    """
+    Load a barcode CSV (either old designed-set format or new subset format) and return
+    a DataFrame with normalised columns: barcode, n, k, homopolymer, gc_min, gc_max.
+    Subset files (columns: barcode, prefix, cycles, min_levenshtein) are detected
+    automatically; all other files are assumed to use the legacy designed-set format.
+    """
+    df = pd.read_csv(path)
+    if 'min_levenshtein' in df.columns:
+        # Subset file: barcodes are already full-length (12 nt); add default QC thresholds
+        df = df.rename(columns={'cycles': 'n', 'min_levenshtein': 'k'})
+        df['homopolymer'] = _SUBSET_HOMOPOLYMER_MAX
+        df['gc_min'] = _SUBSET_GC_MIN
+        df['gc_max'] = _SUBSET_GC_MAX
+    return df
+
+
 def automated_iBAR_assignment(df, distance=3, method='positional'):
     """
-    Automatically assign barcode pairs to a DataFrame by selecting an appropriate pre-designed barcode set.
-    Wrapper for select_complete_and_pair_barcodes()
+    Automatically assign barcode pairs to a DataFrame using subsets of the n12_k3
+    Levenshtein barcode design.  The smallest cycle-count subset that provides enough
+    barcodes for the requested edit distance is selected; if downstream context filtering
+    leaves too few barcodes, the next larger subset is tried automatically.
 
     Parameters
     ----------
     df : pandas.DataFrame
         DataFrame to assign barcodes to. Each row will get a unique barcode pair.
     distance : int, optional
-        Minimum edit distance required between barcodes. Default is 3.
+        Minimum Levenshtein edit distance required between barcodes (2 or 3). Default is 3.
     method : str, optional
         Method for pairing barcodes. Options are:
         - 'positional': Position encoded in first base (default)
@@ -39,22 +87,11 @@ def automated_iBAR_assignment(df, distance=3, method='positional'):
     -------
     pandas.DataFrame
         Input DataFrame with additional columns for barcode pairs:
-        - 'iBAR1': First barcode sequence
-        - 'iBAR2': Second barcode sequence
+        - 'iBAR_1': First barcode sequence
+        - 'iBAR_2': Second barcode sequence
     """
-
-    # import all the barcode sets:
-    bc_sets = pd.DataFrame()
-    search = 'designed_barcode_sets/barcodes_n*_k*_*.noBsmBI.csv'
-    for file in glob(search):
-        df_barcodes = pd.read_csv(file)
-        bc_sets.loc[file, 'length'] = df_barcodes['n'][0]
-        bc_sets.loc[file, 'distance'] = df_barcodes['k'][0]
-        bc_sets.loc[file, 'metric'] = file.split('_')[-1].split('.')[0]
-        bc_sets.loc[file, 'n_barcodes'] = len(df_barcodes)
-    
+    bc_sets = load_subset_barcode_sets()
     iBAR_pairs = select_complete_and_pair_barcodes(bc_sets, len(df), distance=distance, method=method)
-
     return df.merge(iBAR_pairs, left_index=True, right_index=True)
 
 
@@ -110,10 +147,10 @@ def select_complete_and_pair_barcodes(df_bc_sets, n_pairs, distance, method, **k
             break
             
         selected_bc_file = df_bc_sets_subset[df_bc_sets_subset.n_barcodes > min_n_barcodes].iloc[
-            df_bc_sets_subset[df_bc_sets_subset.n_barcodes > min_n_barcodes]['n_barcodes'].argmin()].name 
-        
-        df_barcodes = pd.read_csv(selected_bc_file)
-        
+            df_bc_sets_subset[df_bc_sets_subset.n_barcodes > min_n_barcodes]['n_barcodes'].argmin()].name
+
+        df_barcodes = _load_barcode_file(selected_bc_file)
+
         print('\nEdit distance %s in %s cycles'%(df_barcodes['k'][0],df_barcodes['n'][0]))
 
         iBAR_pairs = complete_iBARs(df_barcodes, n_pairs, method, **kwargs)
@@ -785,31 +822,23 @@ def select_and_complete_individual_barcodes(df, distance, **kwargs):
     """
     
     n_barcodes = len(df)
-    
-    # import all the barcode sets:
-    bc_sets = pd.DataFrame()
-    search = 'designed_barcode_sets/barcodes_n*_k*_*.noBsmBI.csv'
-    for file in glob(search):
-        df_barcodes = pd.read_csv(file)
-        bc_sets.loc[file, 'length'] = df_barcodes['n'][0]
-        bc_sets.loc[file, 'distance'] = df_barcodes['k'][0]
-        bc_sets.loc[file, 'metric'] = file.split('_')[-1].split('.')[0]
-        bc_sets.loc[file, 'n_barcodes'] = len(df_barcodes)
+
+    bc_sets = load_subset_barcode_sets()
 
     df_bc_sets_subset = bc_sets[(bc_sets['distance']==distance) & (bc_sets['n_barcodes']>=n_barcodes)]
-    
+
     iBARs = None
     while iBARs is None:
-        
+
         if len(df_bc_sets_subset)==0:
             print('\nRan out of barcode files')
             break
-            
+
         selected_bc_file = df_bc_sets_subset[df_bc_sets_subset['n_barcodes'] > n_barcodes].iloc[
-            df_bc_sets_subset[df_bc_sets_subset['n_barcodes'] > n_barcodes]['n_barcodes'].argmin()].name 
-        
-        df_barcodes = pd.read_csv(selected_bc_file)
-        
+            df_bc_sets_subset[df_bc_sets_subset['n_barcodes'] > n_barcodes]['n_barcodes'].argmin()].name
+
+        df_barcodes = _load_barcode_file(selected_bc_file)
+
         print('\nEdit distance %s in %s cycles'%(df_barcodes['k'][0],df_barcodes['n'][0]))
 
         iBARs = complete_iBARs_single_guide(df_barcodes, n_barcodes, **kwargs)
