@@ -23,6 +23,34 @@ _SUBSET_GC_MAX = 0.75
 _SUBSET_HOMOPOLYMER_MAX = 4
 
 
+def extract_barcodes_from_design(source):
+    """
+    Extract the set of full-length iBAR sequences used in a previous library design,
+    so they can be excluded when designing a new library.
+
+    Parameters
+    ----------
+    source : str or list
+        Either a path to a CSM library design CSV (must contain 'iBAR_1' and 'iBAR_2'
+        columns), or a plain list/set of barcode strings to exclude directly.
+
+    Returns
+    -------
+    set of str
+        All unique barcode sequences found in the design file or provided list.
+    """
+    if isinstance(source, (list, set, pd.Series)):
+        return set(source)
+    df = pd.read_csv(source)
+    barcodes = set()
+    for col in ('iBAR_1', 'iBAR_2'):
+        if col in df.columns:
+            barcodes.update(df[col].dropna().str.upper())
+    if not barcodes:
+        raise ValueError(f"No iBAR_1 / iBAR_2 columns found in {source}")
+    return barcodes
+
+
 def load_subset_barcode_sets(script_dir=None):
     """
     Load available barcode subset files (generated from the n12_k3 Levenshtein parent set)
@@ -62,7 +90,7 @@ def _load_barcode_file(path):
     return df
 
 
-def automated_iBAR_assignment(df, distance=3, method='positional'):
+def automated_iBAR_assignment(df, distance=3, method='positional', exclude_barcodes=None):
     """
     Automatically assign barcode pairs to a DataFrame using subsets of the n12_k3
     Levenshtein barcode design.  The smallest cycle-count subset that provides enough
@@ -82,6 +110,11 @@ def automated_iBAR_assignment(df, distance=3, method='positional'):
         - 'random_shared': Position-specific but shared between positions
         - 'matched': Identical barcodes in both positions
         See select_complete_and_pair_barcodes() for detailed descriptions.
+    exclude_barcodes : str, list, set, or None, optional
+        Barcodes to exclude from selection (to avoid reuse across libraries).
+        Pass a path to a previous CSM library design CSV, or a list/set of
+        barcode strings. Use extract_barcodes_from_design() to build this set
+        manually. Default is None (no exclusions).
 
     Returns
     -------
@@ -90,13 +123,17 @@ def automated_iBAR_assignment(df, distance=3, method='positional'):
         - 'iBAR_1': First barcode sequence
         - 'iBAR_2': Second barcode sequence
     """
+    excluded = extract_barcodes_from_design(exclude_barcodes) if exclude_barcodes is not None else set()
+    if excluded:
+        print(f'\nExcluding {len(excluded)} previously used barcodes.')
     bc_sets = load_subset_barcode_sets()
-    iBAR_pairs = select_complete_and_pair_barcodes(bc_sets, len(df), distance=distance, method=method)
+    iBAR_pairs = select_complete_and_pair_barcodes(
+        bc_sets, len(df), distance=distance, method=method, excluded=excluded)
     return df.merge(iBAR_pairs, left_index=True, right_index=True)
 
 
 
-def select_complete_and_pair_barcodes(df_bc_sets, n_pairs, distance, method, **kwargs):
+def select_complete_and_pair_barcodes(df_bc_sets, n_pairs, distance, method, excluded=None, **kwargs):
     """
     Automated  (1) selection of barcode sets based on the number of barcodes needed, taking into
     account edit distance and the method of barcode pairing, (2) completion of barcode to required 
@@ -153,8 +190,8 @@ def select_complete_and_pair_barcodes(df_bc_sets, n_pairs, distance, method, **k
 
         print('\nEdit distance %s in %s cycles'%(df_barcodes['k'][0],df_barcodes['n'][0]))
 
-        iBAR_pairs = complete_iBARs(df_barcodes, n_pairs, method, **kwargs)
-        
+        iBAR_pairs = complete_iBARs(df_barcodes, n_pairs, method, excluded=excluded or set(), **kwargs)
+
         if iBAR_pairs is None:
             df_bc_sets_subset = df_bc_sets_subset[df_bc_sets_subset.index != selected_bc_file]
             print('\nTrying again with next smallest barcode set.')
@@ -163,16 +200,23 @@ def select_complete_and_pair_barcodes(df_bc_sets, n_pairs, distance, method, **k
 
 
 def complete_iBARs(
-    df, 
+    df,
     n_constructs,
-    method='positional', 
+    method='positional',
     verbose=1,
+    excluded=None,
     **kwargs
-    ):
+):
     """
     Wrapper for methods of generating complete pairs of iBARs.
     """
     df_barcodes = df.sample(frac=1).copy() # important to randomize barcode order!
+
+    if excluded:
+        before = len(df_barcodes)
+        df_barcodes = df_barcodes[~df_barcodes['barcode'].str.upper().isin(excluded)]
+        df_barcodes = df_barcodes.reset_index(drop=True)
+        print(f'\n{before - len(df_barcodes)} barcodes removed (previously used); {len(df_barcodes)} remaining.')
 
     if method in ['positional', 'matched', 'random_unique']:
         iBAR1s_filtered, iBAR2s_filtered = complete_iBARs_v1(df_barcodes, n_constructs, method, **kwargs)
@@ -797,7 +841,7 @@ def barcode_distance_matrix(barcodes_1, barcodes_2=False, distance_metric='leven
 #                            iBAR selection for single-guide libraries
 ##################################################################################################
 
-def select_and_complete_individual_barcodes(df, distance, **kwargs):
+def select_and_complete_individual_barcodes(df, distance, exclude_barcodes=None, **kwargs):
     """
     Select and complete individual barcodes from a set of barcode files - for use in single-guide 
     libraries. Selects the barcode set with the shortest barcode length that can meet the required 
@@ -805,16 +849,19 @@ def select_and_complete_individual_barcodes(df, distance, **kwargs):
 
     Note that this function is not intended for dual-guide constructs, but instead for non-standard
     use of CROPseq-multi to encode only a single guide and iBAR per construct.
-    
+
     Parameters
     ----------
-    df_bc_sets : pandas.DataFrame
-        DataFrame containing barcode files, with columns for barcode file name and number of barcodes.
-    n_barcodes : int
-        Number of barcodes to select.
+    df : pandas.DataFrame
+        DataFrame to assign barcodes to. Each row will get a unique barcode.
     distance : int
-        Minimum edit distance between barcodes. 
-    
+        Minimum edit distance between barcodes.
+    exclude_barcodes : str, list, set, or None, optional
+        Barcodes to exclude from selection (to avoid reuse across libraries).
+        Pass a path to a previous CSM library design CSV, or a list/set of
+        barcode strings. Use extract_barcodes_from_design() to build this set
+        manually. Default is None (no exclusions).
+
     Returns
     -------
     pd.DataFrame
@@ -822,6 +869,10 @@ def select_and_complete_individual_barcodes(df, distance, **kwargs):
     """
     
     n_barcodes = len(df)
+
+    excluded = extract_barcodes_from_design(exclude_barcodes) if exclude_barcodes is not None else set()
+    if excluded:
+        print(f'\nExcluding {len(excluded)} previously used barcodes.')
 
     bc_sets = load_subset_barcode_sets()
 
@@ -841,7 +892,7 @@ def select_and_complete_individual_barcodes(df, distance, **kwargs):
 
         print('\nEdit distance %s in %s cycles'%(df_barcodes['k'][0],df_barcodes['n'][0]))
 
-        iBARs = complete_iBARs_single_guide(df_barcodes, n_barcodes, **kwargs)
+        iBARs = complete_iBARs_single_guide(df_barcodes, n_barcodes, excluded=excluded, **kwargs)
         
         if iBARs is None:
             df_bc_sets_subset = df_bc_sets_subset[df_bc_sets_subset.index != selected_bc_file]
@@ -853,12 +904,19 @@ def select_and_complete_individual_barcodes(df, distance, **kwargs):
 
 def complete_iBARs_single_guide(
     df, n_constructs,
-    max_it_degenerate_bases = 25,
+    max_it_degenerate_bases=25,
     verbose=1,
+    excluded=None,
 ):
     df_barcodes = df.sample(frac=1).copy() # important to randomize barcode order!
-    
-    # bring barcodes to length 12 with degenerate bases    
+
+    if excluded:
+        before = len(df_barcodes)
+        df_barcodes = df_barcodes[~df_barcodes['barcode'].str.upper().isin(excluded)]
+        df_barcodes = df_barcodes.reset_index(drop=True)
+        print(f'\n{before - len(df_barcodes)} barcodes removed (previously used); {len(df_barcodes)} remaining.')
+
+    # bring barcodes to length 12 with degenerate bases
     if len(df_barcodes['barcode'][0])!=12:
         df_barcodes['barcode'] = df_barcodes['barcode'] + 'N'*(12-len(df_barcodes['barcode'][0]))
     
