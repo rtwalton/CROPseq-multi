@@ -114,14 +114,3 @@ the available pool below the required threshold.
 The independently designed sets are retained for reference and for cases where a
 fully optimized pool at a specific length is preferred over a subset of the n12
 parent.
-
----
-
-## Generation and QC Scripts
-
-| Script | Purpose |
-|---|---|
-| `filter_barcode_subset.py` | Generate a subset from the n12_k3 parent at a given prefix length and edit distance |
-| `run_all_subsets.sh` | Batch wrapper that runs `filter_barcode_subset.py` for all prefix/distance combinations |
-| `qc_barcode_set.py` | All-pairs Levenshtein verification for any barcode set CSV |
-| `plot_barcode_set_sizes.py` | Plot barcode pool sizes across lengths, comparing designed sets and subsets |
