@@ -1,53 +1,7 @@
 # Barcode Sets
 
 This directory contains iBAR sequence pools used for CROPseq-multi library design.
-Two categories of files are provided: **designed sets** (root directory) and **subsets** (`subsets/`).
-
----
-
-## Designed Sets
-
-Files matching `barcodes_n*_k*_<metric>.noBsmBI.csv`
-
-These are independently designed barcode pools, each optimized directly for a specific
-combination of barcode length (`n`) and minimum pairwise edit distance (`k`). The
-`noBsmBI` suffix indicates that any sequence containing a BsmBI recognition site has
-been removed.
-
-**File naming:** `barcodes_n{length}_k{distance}_{metric}.noBsmBI.csv`
-
-| Column | Description |
-|---|---|
-| `barcode` | Full barcode sequence (length `n`) |
-| `gc` | GC fraction |
-| `n` | Barcode length (nt) |
-| `k` | Minimum pairwise edit distance |
-| `homopolymer` | Maximum homopolymer run length |
-| `gc_min` / `gc_max` | GC fraction bounds applied during design |
-
-**Distance metrics:**
-
-- `Levenshtein` — edit distance accounting for substitutions, insertions, and deletions.
-  Recommended for sequencing applications where indel errors are expected.
-- `Hamming` — substitution-only distance. Provided for reference; suitable only when
-  barcode length is fixed and indel errors are not a concern.
-
-**Available designed sets:**
-
-| File | Length | Min distance | Metric | Barcodes |
-|---|---|---|---|---|
-| `barcodes_n6_k2_Levenshtein.noBsmBI.csv` | 6 | 2 | Levenshtein | 883 |
-| `barcodes_n6_k3_Levenshtein.noBsmBI.csv` | 6 | 3 | Levenshtein | 87 |
-| `barcodes_n7_k2_Levenshtein.noBsmBI.csv` | 7 | 2 | Levenshtein | 1,991 |
-| `barcodes_n7_k3_Levenshtein.noBsmBI.csv` | 7 | 3 | Levenshtein | 230 |
-| `barcodes_n8_k2_Levenshtein.noBsmBI.csv` | 8 | 2 | Levenshtein | 12,606 |
-| `barcodes_n8_k3_Levenshtein.noBsmBI.csv` | 8 | 3 | Levenshtein | 835 |
-| `barcodes_n9_k2_Levenshtein.noBsmBI.csv` | 9 | 2 | Levenshtein | 42,534 |
-| `barcodes_n9_k3_Levenshtein.noBsmBI.csv` | 9 | 3 | Levenshtein | 3,054 |
-| `barcodes_n10_k2_Levenshtein.noBsmBI.csv` | 10 | 2 | Levenshtein | 178,183 |
-| `barcodes_n10_k3_Levenshtein.noBsmBI.csv` | 10 | 3 | Levenshtein | 10,644 |
-| `barcodes_n12_k3_Levenshtein.noBsmBI.csv` | 12 | 3 | Levenshtein | 62,679 |
-| `barcodes_n12_k3_Hamming.noBsmBI.csv` | 12 | 3 | Hamming | 78,784 |
+Two categories of files are provided: **subsets** (`subsets/`) and **designed sets** (`designed/`).
 
 ---
 
@@ -55,13 +9,16 @@ been removed.
 
 Files matching `subsets/barcodes_subset_n*_k*_Levenshtein.csv`
 
-These are derived from the `barcodes_n12_k3_Levenshtein.noBsmBI.csv` parent pool.
+Barcode subsets derived from a parent pool `designed/barcodes_n12_k3_Levenshtein.noBsmBI.csv`
+in which all barcodes are 12 (`n`) nucleotides long with a minimum pairwise Levenshtein
+distance of 3 (`k`).
+
 Each subset selects the largest collection of barcodes from that parent whose
 **first `n` nucleotides (the prefix)** satisfy the minimum pairwise Levenshtein
 distance `k`. All barcodes retain the full 12-nt sequence from the parent, ensuring
 compatibility with synthesis and sequencing protocols designed for 12-nt iBARs.
 
-This approach has two practical advantages over the independently designed sets:
+This approach has two practical advantages over independently designed sets (below):
 
 1. **Consistency** — all subsets draw from a single parent pool. Barcodes selected for
    a short-prefix experiment are valid full-length 12-nt sequences that can be used
@@ -99,6 +56,50 @@ This approach has two practical advantages over the independently designed sets:
 
 Note that the n12_k3 subset is identical to the parent designed set, as no prefix
 truncation is applied.
+
+---
+
+## Designed Sets (`designed/`)
+
+Files matching `designed/barcodes_n*_k*_<metric>.noBsmBI.csv`
+
+These are independently designed barcode pools, each optimized directly for a specific
+combination of barcode length (`n`) and minimum pairwise edit distance (`k`). The
+`noBsmBI` suffix indicates that any sequence containing a BsmBI recognition site has
+been removed.
+
+**File naming:** `barcodes_n{length}_k{distance}_{metric}.noBsmBI.csv`
+
+| Column | Description |
+|---|---|
+| `barcode` | Full barcode sequence (length `n`) |
+| `gc` | GC fraction |
+| `n` | Barcode length (nt) |
+| `k` | Minimum pairwise edit distance |
+| `homopolymer` | Maximum homopolymer run length |
+| `gc_min` / `gc_max` | GC fraction bounds applied during design |
+
+**Distance metrics:**
+
+- `Levenshtein` — edit distance accounting for substitutions, insertions, and deletions.
+- `Hamming` — substitution-only distance.
+
+**Available designed sets:**
+
+| File | Length | Min distance | Metric | Barcodes |
+|---|---|---|---|---|
+| `barcodes_n6_k2_Levenshtein.noBsmBI.csv` | 6 | 2 | Levenshtein | 883 |
+| `barcodes_n6_k3_Levenshtein.noBsmBI.csv` | 6 | 3 | Levenshtein | 87 |
+| `barcodes_n7_k2_Levenshtein.noBsmBI.csv` | 7 | 2 | Levenshtein | 1,991 |
+| `barcodes_n7_k3_Levenshtein.noBsmBI.csv` | 7 | 3 | Levenshtein | 230 |
+| `barcodes_n8_k2_Levenshtein.noBsmBI.csv` | 8 | 2 | Levenshtein | 12,606 |
+| `barcodes_n8_k3_Levenshtein.noBsmBI.csv` | 8 | 3 | Levenshtein | 835 |
+| `barcodes_n9_k2_Levenshtein.noBsmBI.csv` | 9 | 2 | Levenshtein | 42,534 |
+| `barcodes_n9_k3_Levenshtein.noBsmBI.csv` | 9 | 3 | Levenshtein | 3,054 |
+| `barcodes_n10_k2_Levenshtein.noBsmBI.csv` | 10 | 2 | Levenshtein | 178,183 |
+| `barcodes_n10_k3_Levenshtein.noBsmBI.csv` | 10 | 3 | Levenshtein | 10,644 |
+| `barcodes_n12_k3_Levenshtein.noBsmBI.csv` | 12 | 3 | Levenshtein | 62,679 |
+| `barcodes_n12_k3_Hamming.noBsmBI.csv` | 12 | 3 | Hamming | 78,784 |
 
 ---
 
